@@ -4,7 +4,7 @@ on:
   schedule:
     # cron 형식: '분 시 일 월 요일' (UTC 기준). 한국시간(KST) = UTC + 9시간.
     # 아래는 UTC 01:30 = KST 오전 10시 30분, 요일은 월~토(1-6)에만 실행.
-    # (일요일은 전 매장 휴무라 실행 안 함. UTC 01:30은 한국과 같은 날이라 1-6 그대로 OK)
+    # (일요일은 전 매장 휴무라 실행 안 함)
     - cron: '30 1 * * 1-6'
   workflow_dispatch:   # Actions 탭에서 수동 실행(테스트)도 가능
  
@@ -12,9 +12,9 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
  
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
  
