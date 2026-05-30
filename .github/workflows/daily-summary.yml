@@ -1,0 +1,31 @@
+name: Daily Telegram Summary
+ 
+on:
+  schedule:
+    # cron 형식: '분 시 일 월 요일' (UTC 기준). 한국시간(KST) = UTC + 9시간.
+    # 아래는 UTC 01:30 = KST 오전 10시 30분, 요일은 월~토(1-6)에만 실행.
+    # (일요일은 전 매장 휴무라 실행 안 함. UTC 01:30은 한국과 같은 날이라 1-6 그대로 OK)
+    - cron: '30 1 * * 1-6'
+  workflow_dispatch:   # Actions 탭에서 수동 실행(테스트)도 가능
+ 
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+ 
+      - name: Install dependencies
+        run: pip install requests anthropic
+ 
+      - name: Run summary
+        env:
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SOURCE_CHAT_ID:    ${{ secrets.SOURCE_CHAT_ID }}
+          TARGET_CHAT_ID:    ${{ secrets.TARGET_CHAT_ID }}
+        run: python summary_oneshot.py
+ 
