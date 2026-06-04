@@ -1,0 +1,27 @@
+name: Maganbogo Summary
+ 
+on:
+  # 실행은 cron-job.org가 정시에 호출(dispatch)해서 시작됩니다.
+  workflow_dispatch:
+ 
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+ 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+ 
+      - name: Install dependencies
+        run: pip install requests anthropic
+ 
+      - name: Run maganbogo summary
+        env:
+          TELEGRAM_TOKEN_2:  ${{ secrets.TELEGRAM_TOKEN_2 }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SOURCE_CHAT_ID_2:  ${{ secrets.SOURCE_CHAT_ID_2 }}
+          TARGET_CHAT_ID_2:  ${{ secrets.TARGET_CHAT_ID_2 }}
+        run: python maganbogo_oneshot.py
+ 
