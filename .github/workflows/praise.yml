@@ -1,0 +1,26 @@
+name: Praise Bot
+ 
+on:
+  # 실행은 cron-job.org가 업무시간 중 30분마다 호출(dispatch)해서 시작됩니다.
+  workflow_dispatch:
+ 
+jobs:
+  praise:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+ 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+ 
+      - name: Install dependencies
+        run: pip install requests anthropic
+ 
+      - name: Run praise bot
+        env:
+          TELEGRAM_TOKEN_4:  ${{ secrets.TELEGRAM_TOKEN_4 }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SOURCE_CHAT_ID_4:  ${{ secrets.SOURCE_CHAT_ID_4 }}
+        run: python praise_oneshot.py
+ 
