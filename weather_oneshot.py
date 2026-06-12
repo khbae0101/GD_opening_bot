@@ -194,7 +194,7 @@ def build_today():
                 return codes[hours.index(key)] if key in hours else d["weather_code"][0]
             regions.append({
                 "name": rg["name"], "ok": True,
-                "am": WMO.get(at(9), "☁️ 흐림"), "pm": WMO.get(at(15), "☁️ 흐림"),
+                "am": WMO.get(at(9), "☁️ 흐림"), "aft": WMO.get(at(15), "☁️ 흐림"),
                 "tmax": round(d["temperature_2m_max"][0]), "tmin": round(d["temperature_2m_min"][0]),
                 "pop": d["precipitation_probability_max"][0] or 0,
                 "rain": d["precipitation_sum"][0] or 0, "snow": d["snowfall_sum"][0] or 0,
@@ -219,7 +219,7 @@ def build_today():
             lines.append("날씨 정보를 일시적으로 불러오지 못했어요")
             lines.append("")
             continue
-        lines.append(f"오전 {r['am']} → 오후 {r['pm']}")
+        lines.append(f"오전 {r['am']} → 오후 {r['aft']}")
         lines.append(f"강수확률 {r['pop']}% · 기온 {r['tmin']}~{r['tmax']}°C")
         lines.append(f"미세먼지 {r['pm']} · 내방영향: "
                      f"{visit_impact(r['pop'], r['rain'], r['snow'], r['tmax'], r['tmin'], r['pm'])}")
@@ -228,7 +228,7 @@ def build_today():
     # 응원 멘트 (수도권 기준)
     rep = next((r for r in regions if r.get("ok")), None)
     if rep:
-        cheer = pick_cheer(rep["am"] + rep["pm"], rep["pop"], rep["rain"],
+        cheer = pick_cheer(rep["am"] + rep["aft"], rep["pop"], rep["rain"],
                            rep["snow"], rep["tmax"], rep["tmin"], rep["pm"])
     else:
         cheer = random.choice(CHEERS["default"])
