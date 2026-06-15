@@ -1,16 +1,19 @@
 """
-매장 지역별 날씨 알림 (1회 실행용)
+매장 지역별 날씨 알림 (기상청 버전, 1회 실행용)
 ─────────────────────────────────────────────
-- 월요일      : 지역별 '주간(월~토)' 날씨
-- 화~토요일   : 지역별 '오늘' 날씨 (+ 특보 자동판단, 내방영향)
-- 맨 아래 그날 날씨에 맞는 응원 멘트를 매번 다르게 한 줄 추가
-- Open-Meteo(무료, API 키 불필요) 사용. 모든 날짜는 한국시간(KST) 기준.
-- 네트워크 일시 오류에 대비해 재시도, 미세먼지는 실패해도 넘어감.
+- 날씨   : 기상청 단기예보(오늘·주간 앞부분) + 중기예보(주간 뒷부분)
+- 미세먼지: Open-Meteo (기상청엔 없어서 그대로 사용, 키 불필요)
+- 월요일 : 지역별 주간(월~토)  /  화~토 : 지역별 오늘 날씨
+- 모든 날짜는 한국시간(KST) 기준. 네트워크 일시 오류 시 재시도.
  
-비밀값(Secrets): TELEGRAM_TOKEN_3 / TARGET_CHAT_ID_3
+비밀값(Secrets):
+  TELEGRAM_TOKEN_3 : 날씨 봇 토큰
+  TARGET_CHAT_ID_3 : 날씨를 올릴 방 ID
+  KMA_SERVICE_KEY  : 기상청 서비스키 (공공데이터포털 '일반 인증키 Decoding')
 """
  
 import os
+import re
 import time
 import random
 from datetime import datetime, timedelta
@@ -20,14 +23,22 @@ import requests
  
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN_3"]
 TARGET_CHAT_ID = int(os.environ["TARGET_CHAT_ID_3"])
+KMA_KEY        = os.environ["KMA_SERVICE_KEY"]
 KST = ZoneInfo("Asia/Seoul")
-TG = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+TG  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
  
+# 지역: 기상청 격자(nx,ny) + 미세먼지용 위경도 + 중기예보 지역코드
 REGIONS = [
-    {"name": "수도권 · 서울/구리/남양주/의정부", "lat": 37.55, "lon": 127.05},
-    {"name": "강원 · 강릉/동해",                 "lat": 37.75, "lon": 128.90},
-    {"name": "강원 · 원주",                      "lat": 37.34, "lon": 127.92},
-    {"name": "강원 · 춘천",                      "lat": 37.88, "lon": 127.73},
+    {"name": "수도권 · 광진/구리", "nx": 62, "ny": 127, "lat": 37.596, "lon": 127.100,
+     "mid_land": "11B00000", "mid_ta": "11B10101"},
+    {"name": "수도권 · 경기북부", "nx": 61, "ny": 130, "lat": 37.711, "lon": 127.055,
+     "mid_land": "11B00000", "mid_ta": "11B10101"},
+    {"name": "강원 · 강릉/동해",  "nx": 93, "ny": 131, "lat": 37.75,  "lon": 128.90,
+     "mid_land": "11D20000", "mid_ta": "11D20501"},
+    {"name": "강원 · 원주",       "nx": 76, "ny": 122, "lat": 37.34,  "lon": 127.92,
+     "mid_land": "11D10000", "mid_ta": "11D10501"},
+    {"name": "강원 · 춘천",       "nx": 73, "ny": 134, "lat": 37.88,  "lon": 127.73,
+     "mid_land": "11D10000", "mid_ta": "11D10301"},
 ]
  
 RAIN_WARN = 60
@@ -36,18 +47,13 @@ COLD_WARN = -12
 WIND_WARN = 14
 RAIN_HEAVY = 30
 SNOW_HEAVY = 5
- 
-WMO = {
-    0: "☀️ 맑음", 1: "🌤️ 대체로 맑음", 2: "⛅ 구름조금", 3: "☁️ 흐림",
-    45: "🌫️ 안개", 48: "🌫️ 안개", 51: "🌦️ 이슬비", 53: "🌦️ 이슬비", 55: "🌦️ 이슬비",
-    61: "🌧️ 비", 63: "🌧️ 비", 65: "🌧️ 강한 비", 66: "🌧️ 어는 비", 67: "🌧️ 어는 비",
-    71: "🌨️ 눈", 73: "🌨️ 눈", 75: "❄️ 강한 눈", 77: "🌨️ 싸락눈",
-    80: "🌦️ 소나기", 81: "🌦️ 소나기", 82: "⛈️ 강한 소나기",
-    85: "🌨️ 눈", 86: "❄️ 강한 눈", 95: "⛈️ 뇌우", 96: "⛈️ 뇌우", 99: "⛈️ 뇌우",
-}
 WDAY = "월화수목금토일"
  
-# ── 응원 멘트 (그날 날씨에 맞춰 랜덤으로 하나 선택) ──────────
+SKY_EMOJI = {"1": "☀️ 맑음", "3": "⛅ 구름많음", "4": "☁️ 흐림"}
+PTY_EMOJI = {"1": "🌧️ 비", "2": "🌨️ 비/눈", "3": "❄️ 눈", "4": "🌦️ 소나기",
+             "5": "🌧️ 빗방울", "6": "🌨️ 진눈깨비", "7": "🌨️ 눈날림"}
+ 
+# ── 응원 멘트 (그날 날씨에 맞춰 랜덤) ─────────────────────
 CHEERS = {
     "clear": [
         "☀️ 날도 화창하네요. 오늘도 활기차게, 우리 지사 파이팅입니다!",
@@ -92,7 +98,7 @@ CHEERS = {
 def pick_cheer(cond="", pop=0, rain=0, snow=0, tmax=0, tmin=99, pm=""):
     if snow >= SNOW_HEAVY or "눈" in cond:
         key = "snow"
-    elif pop >= RAIN_WARN or rain >= RAIN_HEAVY or "비" in cond or "소나기" in cond or "뇌우" in cond:
+    elif pop >= RAIN_WARN or rain >= RAIN_HEAVY or "비" in cond or "소나기" in cond:
         key = "rain"
     elif tmax >= HEAT_WARN:
         key = "heat"
@@ -100,7 +106,7 @@ def pick_cheer(cond="", pop=0, rain=0, snow=0, tmax=0, tmin=99, pm=""):
         key = "cold"
     elif "나쁨" in pm:
         key = "dust"
-    elif "흐림" in cond or "구름" in cond or "안개" in cond:
+    elif "흐림" in cond or "구름" in cond:
         key = "cloudy"
     elif "맑음" in cond:
         key = "clear"
@@ -120,44 +126,100 @@ def fetch_json(url, params, tries=3, timeout=25):
     raise last
  
  
-def pm_grade(pm10, pm25):
-    def g10(v): return 1 if v <= 30 else 2 if v <= 80 else 3 if v <= 150 else 4
-    def g25(v): return 1 if v <= 15 else 2 if v <= 35 else 3 if v <= 75 else 4
-    grade = max(g10(pm10 or 0), g25(pm25 or 0))
-    return {1: "🟢 좋음", 2: "🟡 보통", 3: "🟠 나쁨", 4: "🔴 매우나쁨"}[grade]
+# ── 기상청 호출 ──────────────────────────────────────────
+def kma_items(url, params):
+    base = {"serviceKey": KMA_KEY, "dataType": "JSON", "numOfRows": 1000, "pageNo": 1}
+    d = fetch_json(url, {**base, **params})
+    body = d["response"]["body"]
+    return body["items"]["item"]
  
  
-def fetch_daily(lat, lon, start, end):
-    return fetch_json(
-        "https://api.open-meteo.com/v1/forecast",
-        {
-            "latitude": lat, "longitude": lon,
-            "hourly": "weather_code",
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,"
-                     "snowfall_sum,wind_speed_10m_max,weather_code,precipitation_probability_max",
-            "timezone": "Asia/Seoul", "wind_speed_unit": "ms",
-            "start_date": start, "end_date": end,
-        },
+def base_fullday(now):
+    """오늘 일자료(최저·최고기온 포함)를 받기 위한 단기예보 발표시각."""
+    if now.hour >= 3:
+        return now.strftime("%Y%m%d"), "0200"
+    y = now - timedelta(days=1)
+    return y.strftime("%Y%m%d"), "2300"
+ 
+ 
+def fetch_vilage(rg, bdate, btime):
+    return kma_items(
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        {"base_date": bdate, "base_time": btime, "nx": rg["nx"], "ny": rg["ny"]},
     )
  
  
-def fetch_airquality(lat, lon, day):
-    try:
-        aq = fetch_json(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            {"latitude": lat, "longitude": lon, "hourly": "pm10,pm2_5",
-             "timezone": "Asia/Seoul", "start_date": day, "end_date": day},
-            tries=2,
-        )
-        pm10 = [x for x in aq["hourly"]["pm10"] if x is not None]
-        pm25 = [x for x in aq["hourly"]["pm2_5"] if x is not None]
-        a10 = sum(pm10) / max(1, len(pm10))
-        a25 = sum(pm25) / max(1, len(pm25))
-        return pm_grade(a10, a25)
-    except Exception:
-        return "⚪ 정보없음"
+def parse_amt(v):
+    if not v or "없음" in v:
+        return 0.0
+    m = re.search(r"[\d.]+", v)
+    return float(m.group()) if m else 0.0
  
  
+def cond_emoji(sky, pty):
+    if pty and pty != "0":
+        return PTY_EMOJI.get(pty, "🌧️ 비")
+    return SKY_EMOJI.get(sky, "☁️ 흐림")
+ 
+ 
+def day_data(items, date_str):
+    """해당 날짜의 요약: 오전/오후 날씨, 강수확률, 최저/최고, 강수·적설·풍속."""
+    sky, pty, tmps = {}, {}, []
+    pop = wind = rain = snow = 0.0
+    tmn = tmx = None
+    for it in items:
+        if it["fcstDate"] != date_str:
+            continue
+        c, t, v = it["category"], it["fcstTime"], it["fcstValue"]
+        if c == "POP": pop = max(pop, float(v))
+        elif c == "TMN": tmn = float(v)
+        elif c == "TMX": tmx = float(v)
+        elif c == "TMP": tmps.append(float(v))
+        elif c == "WSD": wind = max(wind, float(v))
+        elif c == "SKY": sky[t] = v
+        elif c == "PTY": pty[t] = v
+        elif c == "PCP": rain = max(rain, parse_amt(v))
+        elif c == "SNO": snow = max(snow, parse_amt(v))
+    if tmn is None and tmps: tmn = min(tmps)
+    if tmx is None and tmps: tmx = max(tmps)
+    return {
+        "am":  cond_emoji(sky.get("0900"), pty.get("0900")),
+        "aft": cond_emoji(sky.get("1500"), pty.get("1500")),
+        "pop": int(pop), "wind": wind, "rain": rain, "snow": snow,
+        "tmin": round(tmn) if tmn is not None else 0,
+        "tmax": round(tmx) if tmx is not None else 0,
+    }
+ 
+ 
+# ── 중기예보 (주간 뒷부분) ───────────────────────────────
+def mid_tmfc(now):
+    if now.hour < 6:
+        return (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
+    if now.hour < 18:
+        return now.strftime("%Y%m%d") + "0600"
+    return now.strftime("%Y%m%d") + "1800"
+ 
+ 
+def fetch_mid(rg, tmfc):
+    ta = kma_items("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
+                   {"regId": rg["mid_ta"], "tmFc": tmfc})[0]
+    land = kma_items("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
+                     {"regId": rg["mid_land"], "tmFc": tmfc})[0]
+    return ta, land
+ 
+ 
+def mid_emoji(text):
+    if not text: return "☁️ 흐림"
+    if "눈" in text: return "❄️ 눈"
+    if "소나기" in text: return "🌦️ 소나기"
+    if "비" in text: return "🌧️ 비"
+    if "흐림" in text: return "☁️ 흐림"
+    if "구름많" in text: return "⛅ 구름많음"
+    if "맑음" in text: return "☀️ 맑음"
+    return "☁️ " + text
+ 
+ 
+# ── 특보/내방영향 ────────────────────────────────────────
 def alerts_for(tmax, tmin, rain, snow, wind):
     out = []
     if rain >= RAIN_HEAVY: out.append("호우 주의 수준")
@@ -178,29 +240,44 @@ def visit_impact(pop, rain, snow, tmax, tmin, pm):
     return f"주의 ({'·'.join(reasons)})" if reasons else "양호"
  
  
+# ── 미세먼지 (Open-Meteo) ────────────────────────────────
+def pm_grade(pm10, pm25):
+    def g10(v): return 1 if v <= 30 else 2 if v <= 80 else 3 if v <= 150 else 4
+    def g25(v): return 1 if v <= 15 else 2 if v <= 35 else 3 if v <= 75 else 4
+    g = max(g10(pm10 or 0), g25(pm25 or 0))
+    return {1: "🟢 좋음", 2: "🟡 보통", 3: "🟠 나쁨", 4: "🔴 매우나쁨"}[g]
+ 
+ 
+def fetch_airquality(lat, lon, day):
+    try:
+        aq = fetch_json(
+            "https://air-quality-api.open-meteo.com/v1/air-quality",
+            {"latitude": lat, "longitude": lon, "hourly": "pm10,pm2_5",
+             "timezone": "Asia/Seoul", "start_date": day, "end_date": day},
+            tries=2,
+        )
+        pm10 = [x for x in aq["hourly"]["pm10"] if x is not None]
+        pm25 = [x for x in aq["hourly"]["pm2_5"] if x is not None]
+        return pm_grade(sum(pm10) / max(1, len(pm10)), sum(pm25) / max(1, len(pm25)))
+    except Exception:
+        return "⚪ 정보없음"
+ 
+ 
+# ── 오늘 날씨 (화~토) ────────────────────────────────────
 def build_today():
     now = datetime.now(KST)
-    today = now.strftime("%Y-%m-%d")
+    today = now.strftime("%Y%m%d")
+    bdate, btime = base_fullday(now)
     lines = [f"🌤 {now.month}/{now.day}({WDAY[now.weekday()]}) 매장 날씨", ""]
  
     regions = []
     for rg in REGIONS:
         try:
-            w = fetch_daily(rg["lat"], rg["lon"], today, today)
-            d = w["daily"]
-            hours = w["hourly"]["time"]; codes = w["hourly"]["weather_code"]
-            def at(hh):
-                key = f"{today}T{hh:02d}:00"
-                return codes[hours.index(key)] if key in hours else d["weather_code"][0]
-            regions.append({
-                "name": rg["name"], "ok": True,
-                "am": WMO.get(at(9), "☁️ 흐림"), "aft": WMO.get(at(15), "☁️ 흐림"),
-                "tmax": round(d["temperature_2m_max"][0]), "tmin": round(d["temperature_2m_min"][0]),
-                "pop": d["precipitation_probability_max"][0] or 0,
-                "rain": d["precipitation_sum"][0] or 0, "snow": d["snowfall_sum"][0] or 0,
-                "wind": d["wind_speed_10m_max"][0] or 0,
-                "pm": fetch_airquality(rg["lat"], rg["lon"], today),
-            })
+            items = fetch_vilage(rg, bdate, btime)
+            d = day_data(items, today)
+            d["name"] = rg["name"]; d["ok"] = True
+            d["pm"] = fetch_airquality(rg["lat"], rg["lon"], now.strftime("%Y-%m-%d"))
+            regions.append(d)
         except Exception:
             regions.append({"name": rg["name"], "ok": False})
  
@@ -225,7 +302,6 @@ def build_today():
                      f"{visit_impact(r['pop'], r['rain'], r['snow'], r['tmax'], r['tmin'], r['pm'])}")
         lines.append("")
  
-    # 응원 멘트 (수도권 기준)
     rep = next((r for r in regions if r.get("ok")), None)
     if rep:
         cheer = pick_cheer(rep["am"] + rep["aft"], rep["pop"], rep["rain"],
@@ -236,38 +312,45 @@ def build_today():
     return "\n".join(lines).strip()
  
  
+# ── 주간 날씨 (월요일) ───────────────────────────────────
 def build_weekly():
     now = datetime.now(KST)
-    monday = now - timedelta(days=now.weekday())
-    saturday = monday + timedelta(days=5)
-    start = monday.strftime("%Y-%m-%d"); end = saturday.strftime("%Y-%m-%d")
-    lines = [f"📅 {monday.month}/{monday.day}~{saturday.month}/{saturday.day} 주간 날씨", ""]
+    bdate, btime = base_fullday(now)
+    tmfc = mid_tmfc(now)
+    sat = now + timedelta(days=5)
+    lines = [f"📅 {now.month}/{now.day}~{sat.month}/{sat.day} 주간 날씨", ""]
  
-    mon = {}  # 수도권 월요일 (응원 멘트 기준)
-    for idx, rg in enumerate(REGIONS):
+    rep0 = {}
+    for rg in REGIONS:
         lines.append(f"[{rg['name']}]")
         try:
-            w = fetch_daily(rg["lat"], rg["lon"], start, end)
-            d = w["daily"]
-            for i, day in enumerate(d["time"]):
-                dt = datetime.strptime(day, "%Y-%m-%d")
-                cond = WMO.get(d["weather_code"][i], "☁️ 흐림")
-                rain_mark = " ☔" if (d["precipitation_probability_max"][i] or 0) >= RAIN_WARN else ""
-                lines.append(
-                    f"{WDAY[dt.weekday()]} {dt.month}/{dt.day} · {cond}{rain_mark} · "
-                    f"{round(d['temperature_2m_min'][i])}~{round(d['temperature_2m_max'][i])}°C · "
-                    f"강수 {d['precipitation_probability_max'][i] or 0}%"
-                )
-                if idx == 0 and i == 0:  # 수도권 월요일
-                    mon = {"cond": cond, "pop": d["precipitation_probability_max"][i] or 0,
-                           "rain": d["precipitation_sum"][i] or 0, "snow": d["snowfall_sum"][i] or 0,
-                           "tmax": d["temperature_2m_max"][i], "tmin": d["temperature_2m_min"][i]}
+            items = fetch_vilage(rg, bdate, btime)
+            # 월·화·수 (단기예보 D0~D2)
+            for i in range(3):
+                dt = now + timedelta(days=i)
+                d = day_data(items, dt.strftime("%Y%m%d"))
+                rain_mark = " ☔" if d["pop"] >= RAIN_WARN else ""
+                lines.append(f"{WDAY[dt.weekday()]} {dt.month}/{dt.day} · {d['aft']}{rain_mark} · "
+                             f"{d['tmin']}~{d['tmax']}°C · 강수 {d['pop']}%")
+                if rg is REGIONS[0] and i == 0:
+                    rep0 = d
+            # 목·금·토 (중기예보 D3~D5)
+            ta, land = fetch_mid(rg, tmfc)
+            for n in (3, 4, 5):
+                dt = now + timedelta(days=n)
+                wf = land.get(f"wf{n}Pm") or land.get(f"wf{n}") or ""
+                rn = land.get(f"rnSt{n}Pm") or land.get(f"rnSt{n}") or 0
+                tmin = ta.get(f"taMin{n}"); tmax = ta.get(f"taMax{n}")
+                rain_mark = " ☔" if int(rn or 0) >= RAIN_WARN else ""
+                lines.append(f"{WDAY[dt.weekday()]} {dt.month}/{dt.day} · {mid_emoji(wf)}{rain_mark} · "
+                             f"{tmin}~{tmax}°C · 강수 {rn}%")
         except Exception:
             lines.append("날씨 정보를 일시적으로 불러오지 못했어요")
         lines.append("")
  
-    cheer = pick_cheer(mon.get("cond", ""), mon.get("pop", 0), mon.get("rain", 0),
-                       mon.get("snow", 0), mon.get("tmax", 0), mon.get("tmin", 99))
+    cheer = pick_cheer(rep0.get("am", "") + rep0.get("aft", ""), rep0.get("pop", 0),
+                       rep0.get("rain", 0), rep0.get("snow", 0),
+                       rep0.get("tmax", 0), rep0.get("tmin", 99))
     lines += ["────────", cheer]
     return "\n".join(lines).strip()
  
