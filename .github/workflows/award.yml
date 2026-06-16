@@ -1,0 +1,26 @@
+name: Award Star
+ 
+on:
+  # 실행은 cron-job.org가 마감 시간(저녁)에 호출(dispatch)해서 시작됩니다.
+  workflow_dispatch:
+ 
+jobs:
+  award:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+ 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+ 
+      - name: Install dependencies
+        run: pip install requests anthropic
+ 
+      - name: Run award
+        env:
+          TELEGRAM_TOKEN_3:  ${{ secrets.TELEGRAM_TOKEN_3 }}
+          TARGET_CHAT_ID_3:  ${{ secrets.TARGET_CHAT_ID_3 }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python award_oneshot.py
+ 
