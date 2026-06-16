@@ -1,25 +1,25 @@
 name: Weather Summary
- 
+
 on:
-  # 실행은 cron-job.org가 정시에 호출(dispatch)해서 시작됩니다.
+  # 실행은 cron-job.org가 매일 아침(월~토) 호출(dispatch)해서 시작됩니다.
   workflow_dispatch:
- 
+
 jobs:
   weather:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
- 
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
- 
+
       - name: Install dependencies
         run: pip install requests
- 
+
       - name: Run weather
         env:
           TELEGRAM_TOKEN_3: ${{ secrets.TELEGRAM_TOKEN_3 }}
           TARGET_CHAT_ID_3: ${{ secrets.TARGET_CHAT_ID_3 }}
+          KMA_SERVICE_KEY:  ${{ secrets.KMA_SERVICE_KEY }}
         run: python weather_oneshot.py
- 
