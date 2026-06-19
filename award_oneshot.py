@@ -107,7 +107,11 @@ def build_message(counts):
     total = sum(counts.values())
     top = max(counts.values())
     kings = [n for n, c in counts.items() if c == top]
-    lucky = random.choice(people)
+ 
+    # 토요일은 럭키추첨 2명(참여자가 적으면 있는 만큼), 그 외 1명
+    n_lucky = 2 if now.weekday() == 5 else 1
+    n_lucky = min(n_lucky, len(people))
+    luckies = random.sample(people, n_lucky)
  
     lines = [f"⭐ 오늘의 판매스타 ({now.month}/{now.day}) ⭐", ""]
     lines.append(f"오늘 실적 공유에 참여해주신 {len(people)}분, 모두 고생 많으셨어요!")
@@ -118,8 +122,12 @@ def build_message(counts):
         lines.append(f"  · {k}")
     lines.append("정말 대단해요! 🔥" if len(kings) == 1 else "모두 정말 대단해요! 🔥")
     lines.append("")
-    lines.append("🎰 럭키 추첨 (당일 1건 이상 공유자 중 추첨)")
-    lines.append(f"  · {lucky} 🎉")
+    if n_lucky >= 2:
+        lines.append("🎰 럭키 추첨 (토요일 특별 2배 추첨! · 당일 1건 이상 공유자 중)")
+    else:
+        lines.append("🎰 럭키 추첨 (당일 1건 이상 공유자 중 추첨)")
+    for lk in luckies:
+        lines.append(f"  · {lk} 🎉")
     lines.append("축하드려요!")
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
