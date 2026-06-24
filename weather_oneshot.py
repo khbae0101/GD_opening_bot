@@ -16,6 +16,10 @@ import os
 import re
 import time
 import random
+import html as _html
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
  
@@ -355,14 +359,99 @@ def build_weekly():
     return "\n".join(lines).strip()
  
  
+# ── 업계 뉴스 (구글 뉴스 RSS, 어제 기사) ────────────────
+NEWS_GROUPS = [
+    ("통신사", ["KT", "SKT", "LG유플러스"]),
+    ("제조사", ["갤럭시", "아이폰"]),
+]
+ 
+ 
+def split_source(title):
+    if " - " in title:
+        t, src = title.rsplit(" - ", 1)
+        return t.strip(), src.strip()
+    return title, ""
+ 
+ 
+def fetch_news_group(keywords, n=2):
+    today = datetime.now(KST).date()
+    yest = today - timedelta(days=1)
+    items = []
+    for kw in keywords:
+        url = (f"https://news.google.com/rss/search?q={quote(kw)}+when:1d"
+               f"&hl=ko&gl=KR&ceid=KR:ko")
+        try:
+            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            root = ET.fromstring(r.content)
+        except Exception:
+            continue
+        for it in root.iter("item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            try:
+                dt = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone(KST).date()
+            except Exception:
+                dt = today
+            if not title or not link or dt < yest:   # 어제 이전 기사는 제외
+                continue
+            items.append((dt, title, link))
+    # 최신순 정렬 + 제목 중복 제거 + 상위 n개
+    seen, uniq = set(), []
+    for dt, title, link in sorted(items, key=lambda x: x[0], reverse=True):
+        if title in seen:
+            continue
+        seen.add(title)
+        uniq.append((title, link))
+        if len(uniq) >= n:
+            break
+    return uniq
+ 
+ 
+def build_news_html():
+    blocks = []
+    for label, kws in NEWS_GROUPS:
+        items = fetch_news_group(kws, 2)
+        if not items:
+            continue
+        lines = [f"[{label}]"]
+        for title, link in items:
+            t, src = split_source(title)
+            t = _html.escape(t)
+            url = _html.escape(link, quote=True)
+            srctxt = f" ({_html.escape(src)})" if src else ""
+            lines.append(f'· <a href="{url}">{t}</a>{srctxt}')
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    yest = datetime.now(KST) - timedelta(days=1)
+    header = f"📰 어제의 업계 동향 ({yest.month}/{yest.day} 기준)"
+    return "━━━━━━━━\n" + header + "\n\n" + "\n\n".join(blocks)
+ 
+ 
 def main():
     weekday = datetime.now(KST).weekday()
     if weekday == 6:
         print("일요일은 게시하지 않습니다.")
         return
     text = build_weekly() if weekday == 0 else build_today()
-    requests.post(f"{TG}/sendMessage",
-                  json={"chat_id": TARGET_CHAT_ID, "text": text}, timeout=30)
+ 
+    # 뉴스 (실패해도 날씨는 정상 게시)
+    try:
+        news = build_news_html()
+    except Exception:
+        news = ""
+ 
+    body = _html.escape(text)          # 날씨 본문(특수문자 안전 처리)
+    if news:
+        body = body + "\n\n" + news    # 뉴스는 이미 HTML이라 그대로 붙임
+ 
+    requests.post(
+        f"{TG}/sendMessage",
+        json={"chat_id": TARGET_CHAT_ID, "text": body,
+              "parse_mode": "HTML",
+              "link_preview_options": {"is_disabled": True}},
+        timeout=30,
+    )
     print("날씨 게시 완료")
  
  
