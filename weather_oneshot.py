@@ -359,11 +359,9 @@ def build_weekly():
     return "\n".join(lines).strip()
  
  
-# ── 업계 뉴스 (구글 뉴스 RSS, 어제 기사) ────────────────
-NEWS_GROUPS = [
-    ("통신사", ["KT", "SKT", "LG유플러스"]),
-    ("제조사", ["갤럭시", "아이폰"]),
-]
+# ── 업계 뉴스 (구글 뉴스 RSS 후보 → 앤트로픽 AI 선별) ────
+NEWS_KEYWORDS = ["KT", "SKT", "LG유플러스", "통신사", "이동통신",
+                 "삼성 갤럭시", "애플 아이폰", "스마트폰"]
  
  
 def split_source(title):
@@ -373,11 +371,12 @@ def split_source(title):
     return title, ""
  
  
-def fetch_news_group(keywords, n=2):
+def collect_candidates():
+    """RSS에서 어제 기사 후보를 넉넉히 모은다(제목 중복 제거)."""
     today = datetime.now(KST).date()
     yest = today - timedelta(days=1)
-    items = []
-    for kw in keywords:
+    seen, cand = set(), []
+    for kw in NEWS_KEYWORDS:
         url = (f"https://news.google.com/rss/search?q={quote(kw)}+when:1d"
                f"&hl=ko&gl=KR&ceid=KR:ko")
         try:
@@ -392,35 +391,82 @@ def fetch_news_group(keywords, n=2):
                 dt = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone(KST).date()
             except Exception:
                 dt = today
-            if not title or not link or dt < yest:   # 어제 이전 기사는 제외
+            if not title or not link or dt < yest:
                 continue
-            items.append((dt, title, link))
-    # 최신순 정렬 + 제목 중복 제거 + 상위 n개
-    seen, uniq = set(), []
-    for dt, title, link in sorted(items, key=lambda x: x[0], reverse=True):
-        if title in seen:
-            continue
-        seen.add(title)
-        uniq.append((title, link))
-        if len(uniq) >= n:
-            break
-    return uniq
+            t, _ = split_source(title)
+            if t in seen:
+                continue
+            seen.add(t)
+            cand.append({"title": title, "link": link})
+    return cand[:40]   # 너무 많지 않게 상한
+ 
+ 
+def pick_news_with_ai(cand):
+    """AI가 통신사 2개·제조사 2개를 선별해 인덱스로 반환."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    import anthropic
+    listing = "\n".join(f"{i}. {c['title']}" for i, c in enumerate(cand))
+    prompt = f"""아래는 어제 올라온 뉴스 기사 제목 목록(번호 포함)이야.
+ 
+# 분류 기준
+- '통신사': KT, SKT, LG유플러스 등 국내 이동통신사의 사업·요금제·정책·실적·서비스 관련 기사.
+- '제조사': 삼성 갤럭시, 애플 아이폰 등 스마트폰 단말기의 출시·가격·신제품·업데이트 관련 기사.
+- 야구(KT위즈 등), 증권/주가, 연예, 단순 광고/홍보, 통신·스마트폰과 무관한 기사는 제외.
+ 
+# 할 일
+- 통신사 동향에 가장 적합한 기사 2개, 제조사 동향에 가장 적합한 기사 2개를 골라.
+- 가능한 최신·핵심 위주로. 적합한 게 부족하면 있는 만큼만.
+ 
+# 출력 (JSON만, 설명 없이)
+{{"telecom": [번호, 번호], "device": [번호, 번호]}}
+ 
+# 기사 목록
+{listing}
+"""
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=200,
+            system="너는 뉴스 제목을 분류해 JSON만 출력하는 도구야.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+        if "{" in text:
+            text = text[text.index("{"):text.rindex("}") + 1]
+        import json
+        data = json.loads(text)
+        return data
+    except Exception:
+        return None
  
  
 def build_news_html():
+    cand = collect_candidates()
+    if not cand:
+        return ""
+    picked = pick_news_with_ai(cand)
+    if not picked:
+        return ""
+ 
+    def fmt(idx_list):
+        out = []
+        for i in idx_list or []:
+            if isinstance(i, int) and 0 <= i < len(cand):
+                t, src = split_source(cand[i]["title"])
+                url = _html.escape(cand[i]["link"], quote=True)
+                srctxt = f" ({_html.escape(src)})" if src else ""
+                out.append(f'· <a href="{url}">{_html.escape(t)}</a>{srctxt}')
+        return out
+ 
     blocks = []
-    for label, kws in NEWS_GROUPS:
-        items = fetch_news_group(kws, 2)
-        if not items:
-            continue
-        lines = [f"[{label}]"]
-        for title, link in items:
-            t, src = split_source(title)
-            t = _html.escape(t)
-            url = _html.escape(link, quote=True)
-            srctxt = f" ({_html.escape(src)})" if src else ""
-            lines.append(f'· <a href="{url}">{t}</a>{srctxt}')
-        blocks.append("\n".join(lines))
+    tele = fmt(picked.get("telecom"))
+    dev = fmt(picked.get("device"))
+    if tele:
+        blocks.append("[통신사]\n" + "\n".join(tele))
+    if dev:
+        blocks.append("[제조사]\n" + "\n".join(dev))
     if not blocks:
         return ""
     yest = datetime.now(KST) - timedelta(days=1)
