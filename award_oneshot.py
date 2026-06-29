@@ -13,6 +13,7 @@
 """
  
 import os
+import csv
 import json
 import random
 from datetime import datetime
@@ -27,6 +28,9 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL             = "claude-sonnet-4-6"
 KST = ZoneInfo("Asia/Seoul")
 TG  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+ 
+AWARD_CSV = "data/award_results.csv"   # 일별 시상 결과
+SALES_CSV = "data/daily_sales.csv"     # 일별 개인 실적
  
 COUNT_SYSTEM = ("너는 휴대폰 판매 실적 보고를 분석해 직원별 개통 건수를 세는 도구야. "
                 "반드시 지정된 JSON만 출력하고 다른 말은 하지 마.")
@@ -101,37 +105,70 @@ def count_sales(reports):
     return result
  
  
-def build_message(counts):
+def compute_result(counts):
     now = datetime.now(KST)
     people = list(counts.keys())
-    total = sum(counts.values())
     top = max(counts.values())
     kings = [n for n, c in counts.items() if c == top]
- 
     # 토요일은 럭키추첨 2명(참여자가 적으면 있는 만큼), 그 외 1명
-    n_lucky = 2 if now.weekday() == 5 else 1
-    n_lucky = min(n_lucky, len(people))
+    n_lucky = min(2 if now.weekday() == 5 else 1, len(people))
     luckies = random.sample(people, n_lucky)
+    return {
+        "date": now.strftime("%Y-%m-%d"),
+        "md": f"{now.month}/{now.day}",
+        "people": people, "total": sum(counts.values()),
+        "top": top, "kings": kings, "luckies": luckies, "counts": counts,
+        "sat": now.weekday() == 5,
+    }
  
-    lines = [f"⭐ 오늘의 판매스타 ({now.month}/{now.day}) ⭐", ""]
-    lines.append(f"오늘 실적 공유에 참여해주신 {len(people)}분, 모두 고생 많으셨어요!")
-    lines.append(f"총 {total}건의 판매가 공유됐습니다 👏")
+ 
+def build_message(res):
+    lines = [f"⭐ 오늘의 판매스타 ({res['md']}) ⭐", ""]
+    lines.append(f"오늘 실적 공유에 참여해주신 {len(res['people'])}분, 모두 고생 많으셨어요!")
+    lines.append(f"총 {res['total']}건의 판매가 공유됐습니다 👏")
     lines.append("")
-    lines.append(f"👑 오늘의 판매왕 ({top}건)")
-    for k in kings:
+    lines.append(f"👑 오늘의 판매왕 ({res['top']}건)")
+    for k in res["kings"]:
         lines.append(f"  · {k}")
-    lines.append("정말 대단해요! 🔥" if len(kings) == 1 else "모두 정말 대단해요! 🔥")
+    lines.append("정말 대단해요! 🔥" if len(res["kings"]) == 1 else "모두 정말 대단해요! 🔥")
     lines.append("")
-    if n_lucky >= 2:
+    if len(res["luckies"]) >= 2:
         lines.append("🎰 럭키 추첨 (토요일 특별 2배 추첨! · 당일 1건 이상 공유자 중)")
     else:
         lines.append("🎰 럭키 추첨 (당일 1건 이상 공유자 중 추첨)")
-    for lk in luckies:
+    for lk in res["luckies"]:
         lines.append(f"  · {lk} 🎉")
     lines.append("축하드려요!")
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
     return "\n".join(lines)
+ 
+ 
+def _upsert_csv(path, header, rows, date_str):
+    """같은 날짜 줄은 지우고 새로 기록(중복 방지). Excel용 utf-8-sig."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    existing = []
+    if os.path.exists(path):
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            r = list(csv.reader(f))
+        existing = [row for row in r[1:] if row and row[0] != date_str]
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(sorted(existing + rows, key=lambda r: r[0]))
+ 
+ 
+def write_csv(res):
+    d = res["date"]
+    # 시상 결과
+    _upsert_csv(
+        AWARD_CSV, ["날짜", "판매왕", "판매왕건수", "럭키추첨"],
+        [[d, ", ".join(res["kings"]), res["top"], ", ".join(res["luckies"])]], d,
+    )
+    # 개인 실적 (사람별 한 줄)
+    rows = [[d, name, cnt] for name, cnt in sorted(res["counts"].items(),
+                                                   key=lambda x: -x[1])]
+    _upsert_csv(SALES_CSV, ["날짜", "점명이름", "건수"], rows, d)
  
  
 def main():
@@ -143,10 +180,12 @@ def main():
     if not counts:
         print("집계 결과가 비어 있습니다. 게시하지 않습니다.")
         return
-    text = build_message(counts)
+    res = compute_result(counts)
+    text = build_message(res)
     requests.post(f"{TG}/sendMessage",
                   json={"chat_id": CHAT_ID, "text": text}, timeout=30)
-    print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건")
+    write_csv(res)   # 데이터 기록 (GitHub에 저장됨)
+    print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건 · CSV 기록 완료")
  
  
 if __name__ == "__main__":
