@@ -360,8 +360,8 @@ def build_weekly():
  
  
 # ── 업계 뉴스 (구글 뉴스 RSS 후보 → 앤트로픽 AI 선별) ────
-NEWS_KEYWORDS = ["KT", "SKT", "LG유플러스", "통신사", "이동통신",
-                 "삼성 갤럭시", "애플 아이폰", "스마트폰"]
+TELECOM_KEYWORDS = ["KT", "SKT", "LG유플러스", "통신사", "이동통신"]
+DEVICE_KEYWORDS  = ["삼성 갤럭시", "애플 아이폰", "갤럭시", "아이폰", "스마트폰"]
  
  
 def split_source(title):
@@ -371,21 +371,20 @@ def split_source(title):
     return title, ""
  
  
-def collect_candidates():
-    """RSS에서 어제 기사 후보를 넉넉히 모은다(제목 중복 제거)."""
+def _collect(keywords, seen, cap):
+    """주어진 키워드들로 어제 기사 후보를 모은다(seen으로 전역 중복 제거)."""
     today = datetime.now(KST).date()
     yest = today - timedelta(days=1)
-    seen, cand = set(), []
-    for kw in NEWS_KEYWORDS:
+    cand = []
+    for kw in keywords:
         url = (f"https://news.google.com/rss/search?q={quote(kw)}+when:1d"
                f"&hl=ko&gl=KR&ceid=KR:ko")
         try:
             r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             root = ET.fromstring(r.content)
         except Exception as e:
-            print(f"[뉴스] '{kw}' RSS 실패: {e!r} (status={getattr(r,'status_code','?') if 'r' in dir() else '?'})")
+            print(f"[뉴스] '{kw}' RSS 실패: {e!r}")
             continue
-        n_kw = 0
         for it in root.iter("item"):
             title = (it.findtext("title") or "").strip()
             link = (it.findtext("link") or "").strip()
@@ -400,10 +399,18 @@ def collect_candidates():
                 continue
             seen.add(t)
             cand.append({"title": title, "link": link})
-            n_kw += 1
-        print(f"[뉴스] '{kw}' 후보 {n_kw}건")
-    print(f"[뉴스] 전체 후보 {len(cand)}건")
-    return cand[:40]   # 너무 많지 않게 상한
+    print(f"[뉴스] {keywords[0]}… 그룹 후보 {len(cand)}건")
+    return cand[:cap]
+ 
+ 
+def collect_candidates():
+    """통신사·제조사 후보를 따로 모아 합친다(각 그룹이 AI에 균형있게 전달되도록)."""
+    seen = set()
+    tele = _collect(TELECOM_KEYWORDS, seen, 25)
+    dev = _collect(DEVICE_KEYWORDS, seen, 25)
+    cand = tele + dev
+    print(f"[뉴스] 전체 후보 {len(cand)}건 (통신 {len(tele)} / 제조 {len(dev)})")
+    return cand
  
  
 def pick_news_with_ai(cand):
