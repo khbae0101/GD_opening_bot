@@ -382,8 +382,10 @@ def collect_candidates():
         try:
             r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             root = ET.fromstring(r.content)
-        except Exception:
+        except Exception as e:
+            print(f"[뉴스] '{kw}' RSS 실패: {e!r} (status={getattr(r,'status_code','?') if 'r' in dir() else '?'})")
             continue
+        n_kw = 0
         for it in root.iter("item"):
             title = (it.findtext("title") or "").strip()
             link = (it.findtext("link") or "").strip()
@@ -398,6 +400,9 @@ def collect_candidates():
                 continue
             seen.add(t)
             cand.append({"title": title, "link": link})
+            n_kw += 1
+        print(f"[뉴스] '{kw}' 후보 {n_kw}건")
+    print(f"[뉴스] 전체 후보 {len(cand)}건")
     return cand[:40]   # 너무 많지 않게 상한
  
  
@@ -405,6 +410,7 @@ def pick_news_with_ai(cand):
     """AI가 통신사 2개·제조사 2개를 선별해 인덱스로 반환."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
+        print("[뉴스] ANTHROPIC_API_KEY 없음 - AI 선별 불가")
         return None
     import anthropic
     listing = "\n".join(f"{i}. {c['title']}" for i, c in enumerate(cand))
@@ -437,17 +443,21 @@ def pick_news_with_ai(cand):
             text = text[text.index("{"):text.rindex("}") + 1]
         import json
         data = json.loads(text)
+        print(f"[뉴스] AI 선별 결과: {data}")
         return data
-    except Exception:
+    except Exception as e:
+        print(f"[뉴스] AI 선별 실패: {e!r}")
         return None
  
  
 def build_news_html():
     cand = collect_candidates()
     if not cand:
+        print("[뉴스] 후보 없음 - 뉴스 블록 생략")
         return ""
     picked = pick_news_with_ai(cand)
     if not picked:
+        print("[뉴스] AI 선별 결과 없음 - 뉴스 블록 생략")
         return ""
  
     def fmt(idx_list):
@@ -484,8 +494,10 @@ def main():
     # 뉴스 (실패해도 날씨는 정상 게시)
     try:
         news = build_news_html()
-    except Exception:
+    except Exception as e:
+        print(f"[뉴스] build_news_html 예외: {e!r}")
         news = ""
+    print(f"[뉴스] 최종 뉴스블록 길이: {len(news)}")
  
     body = _html.escape(text)          # 날씨 본문(특수문자 안전 처리)
     if news:
