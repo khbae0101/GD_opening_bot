@@ -16,7 +16,7 @@ import os
 import csv
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
  
 import requests
@@ -64,11 +64,36 @@ def looks_like_report(t):
     return any(k in t for k in keys)
  
  
+def load_roster():
+    """표준 인원 명단(data/roster.csv)을 읽어 '매장 이름' 목록으로 반환. 없으면 빈 리스트."""
+    path = "data/roster.csv"
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        return [f"{r[0].strip()} {r[1].strip()}" for r in rows[1:] if len(r) >= 2 and r[0].strip()]
+    except Exception as e:
+        print(f"[시상] 명단 로드 실패({e!r}) - 명단 없이 진행")
+        return []
+ 
+ 
 def count_sales(reports):
     """AI로 직원별 휴대폰 개통 건수를 집계해 dict로 반환."""
     body = "\n\n──\n\n".join(reports)
-    prompt = f"""아래는 오늘 단체방에 올라온 휴대폰 판매 실적 보고들이야. 직원별 '휴대폰 개통 건수'를 세줘.
+    roster = load_roster()
+    roster_block = ""
+    if roster:
+        roster_block = f"""
+# 표준 인원 명단 ("매장 이름" — 이 표기가 기준이야)
+{chr(10).join(roster)}
  
+# 명단 매칭 규칙
+- 보고의 점명·이름을 위 명단과 매칭해서, 기록은 반드시 명단의 "매장 이름" 표기로 통일한다.
+  (예: "의로 김해진", "의정부 김해진" → "의정부로데오 김해진")
+- 점명이 줄임말·다른 표기라도 이름이 명단에 한 명뿐이면 그 사람으로 확정한다.
+- 명단에 없는 사람(신규 입사 등)은 보고된 "점명 이름" 그대로 기록한다(빼지 마).
+"""
+    prompt = f"""아래는 오늘 단체방에 올라온 휴대폰 판매 실적 보고들이야. 직원별 '휴대폰 개통 건수'를 세줘.
+{roster_block}
 # 세는 규칙
 - 보통 "점명 이름"(예: 중계 전우진) 줄 다음에 개통 내역 줄이 온다.
 - 개통 내역 줄은 "모델명/개통유형/요금제/부가/보험/카드/리본" 형식이고, 휴대폰 모델명으로 시작한다(A175, S948, F966, AIP17, M366, ZTE 클래식폴더 등).
@@ -77,7 +102,6 @@ def count_sales(reports):
 - 휴대폰 신규/기변/번이/MNP/공시 개통만 센다.
 - 맨 앞 글 작성자 줄("...님:" 또는 "이름:")은 무시하고 "점명 이름"으로 집계한다.
 - 이름 줄 없이 개통 줄만 이어지면 바로 위 사람 것으로 본다.
-- 점명이 줄임말/다른 표기로 적혀도 표준 점명으로 통일해서 기록한다. 특히 "덕계", "양주덕계점"은 "양주덕계"로 기록한다. (단, "양주"만 단독으로 적힌 경우는 옥정신도시와 구분이 안 되니 적힌 그대로 둔다.)
  
 # 출력 형식 (JSON만, 머리말·설명·코드블록 없이)
 {{"counts": [{{"name": "점명 이름", "count": 건수}}, ...]}}
@@ -117,6 +141,114 @@ def count_sales(reports):
     return result
  
  
+def load_month_history(today_str):
+    """이번 달, 오늘 이전 날짜의 개인 실적 이력 [(날짜, 이름, 건수)]."""
+    hist = []
+    try:
+        with open(SALES_CSV, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        month = today_str[:7]
+        for r in rows[1:]:
+            if len(r) >= 3 and r[0][:7] == month and r[0] < today_str:
+                try:
+                    hist.append((r[0], r[1].strip(), int(r[2])))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return hist
+ 
+ 
+def workdays(d1, d2):
+    """d1~d2(포함) 사이 일요일을 뺀 날짜 수. d1이 d2보다 뒤면 0."""
+    n, d = 0, d1
+    while d <= d2:
+        if d.weekday() != 6:
+            n += 1
+        d += timedelta(days=1)
+    return n
+ 
+ 
+NOSALE_CHEERS = ["내일 첫 테이프 끊어봐요!", "곧 터질 거예요, 파이팅!",
+                 "내일은 꼭 1건! 응원해요!", "슬슬 시동 걸어볼까요?"]
+ 
+ 
+def compute_extras(counts, now):
+    """월 단위 프로모션 계산: 5건 달성 / 골든벨 / 데뷔 / 컴백 / 무실적 응원."""
+    today_str = now.strftime("%Y-%m-%d")
+    today = now.date()
+    first = today.replace(day=1)
+    hist = load_month_history(today_str)
+    roster = load_roster()
+    rset = set(roster)
+ 
+    prev_cum, last_sale = {}, {}
+    for d, name, c in hist:
+        prev_cum[name] = prev_cum.get(name, 0) + c
+        if c > 0 and (name not in last_sale or d > last_sale[name]):
+            last_sale[name] = d
+ 
+    # ① 5건 단위 달성 (오늘 실적으로 5의 배수를 새로 넘은 사람)
+    milestones = []
+    for name, c in counts.items():
+        prev = prev_cum.get(name, 0)
+        new = prev + c
+        if new // 5 > prev // 5:
+            milestones.append((name, (new // 5) * 5))
+    milestones.sort(key=lambda x: -x[1])
+ 
+    # ② 지사 골든벨 (월 누적 100건 단위 돌파, N번째 건의 주인공)
+    total_prev = sum(prev_cum.values())
+    total_new = total_prev + sum(counts.values())
+    goldenbell = None
+    if total_new // 100 > total_prev // 100:
+        threshold = (total_prev // 100 + 1) * 100
+        running = total_prev
+        for name, c in counts.items():   # 보고 순서(근사)
+            running += c
+            if running >= threshold:
+                goldenbell = (threshold, name)
+                break
+ 
+    # ③ 데뷔 축하 (명단에 없고 이번 달 첫 등장 = 신규 입사 추정, 최초 1회)
+    seen_before = set(n for _, n, _ in hist)
+    debuts = [n for n in counts if rset and n not in rset and n not in seen_before]
+ 
+    # ④ 컴백 축하 (일요일 제외 5일 이상 무실적이었다가 오늘 실적 발생, 명단 직원만)
+    comebacks = []
+    for name in counts:
+        if rset and name not in rset:
+            continue   # 명단 외(신규)는 데뷔로 처리
+        if name in last_sale:
+            last = datetime.strptime(last_sale[name], "%Y-%m-%d").date()
+            gap_from = last + timedelta(days=1)
+        else:
+            if not hist:
+                continue   # 이력 자체가 없으면(월초 등) 판단 불가
+            gap_from = first
+        gap = workdays(gap_from, today - timedelta(days=1))
+        if gap >= 5:
+            comebacks.append((name, workdays(gap_from, today)))
+ 
+    # ⑤ 무실적 응원 (명단 직원 중 오늘도 실적 없음, 일요일 제외 5일 단위 그날만)
+    nosales = []
+    if roster and hist:   # 명단·이력 있어야 의미 있음
+        for name in roster:
+            if name in counts:
+                continue
+            if name in last_sale:
+                gap_from = datetime.strptime(last_sale[name], "%Y-%m-%d").date() + timedelta(days=1)
+            else:
+                gap_from = first
+            streak = workdays(gap_from, today)
+            if streak >= 5 and streak % 5 == 0:
+                nosales.append((name, streak))
+        nosales.sort(key=lambda x: -x[1])
+ 
+    return {"milestones": milestones, "goldenbell": goldenbell,
+            "debuts": debuts, "comebacks": comebacks, "nosales": nosales}
+ 
+ 
 def compute_result(counts):
     now = datetime.now(KST)
     people = list(counts.keys())
@@ -125,13 +257,15 @@ def compute_result(counts):
     # 토요일은 럭키추첨 2명(참여자가 적으면 있는 만큼), 그 외 1명
     n_lucky = min(2 if now.weekday() == 5 else 1, len(people))
     luckies = random.sample(people, n_lucky)
-    return {
+    res = {
         "date": now.strftime("%Y-%m-%d"),
         "md": f"{now.month}/{now.day}",
         "people": people, "total": sum(counts.values()),
         "top": top, "kings": kings, "luckies": luckies, "counts": counts,
         "sat": now.weekday() == 5,
     }
+    res.update(compute_extras(counts, now))
+    return res
  
  
 def build_message(res):
@@ -151,6 +285,39 @@ def build_message(res):
     for lk in res["luckies"]:
         lines.append(f"  · {lk} 🎉")
     lines.append("축하드려요!")
+ 
+    if res.get("milestones"):
+        lines.append("")
+        lines.append("🎯 달성 축하")
+        for name, m in res["milestones"]:
+            lines.append(f"  · {name} 님, 이달 {m}건 달성! 👏")
+ 
+    if res.get("goldenbell"):
+        n, name = res["goldenbell"]
+        lines.append("")
+        lines.append("🔔 지사 골든벨")
+        lines.append(f"  오늘 우리 지사 월누적 {n}건 돌파! 🎊")
+        lines.append(f"  {n}번째 주인공: {name} 님")
+ 
+    if res.get("debuts"):
+        lines.append("")
+        lines.append("🌱 데뷔 축하")
+        for name in res["debuts"]:
+            lines.append(f"  · {name} 님, 첫 실적 신고! 환영합니다!")
+ 
+    if res.get("comebacks"):
+        lines.append("")
+        lines.append("🎉 컴백 축하")
+        for name, gap in res["comebacks"]:
+            lines.append(f"  · {name} 님, {gap}일 만의 복귀! 다시 달려봐요!")
+ 
+    if res.get("nosales"):
+        lines.append("")
+        lines.append("💪 응원합니다")
+        for name, streak in res["nosales"]:
+            cheer = random.choice(NOSALE_CHEERS)
+            lines.append(f"  · {name} 님, {streak}일째 잠잠… {cheer}")
+ 
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
     return "\n".join(lines)
