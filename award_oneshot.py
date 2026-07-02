@@ -280,6 +280,49 @@ def compute_extras(counts, now):
             "steadies": steadies, "full_stores": full_stores}
  
  
+def load_month_kings(today_str):
+    """이번 달 award_results.csv에서 일일 판매왕 선정 횟수 집계."""
+    kc = {}
+    try:
+        with open(AWARD_CSV, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        month = today_str[:7]
+        for r in rows[1:]:
+            if len(r) >= 2 and r[0][:7] == month and r[0] < today_str:
+                for name in r[1].split(","):
+                    name = name.strip()
+                    if name:
+                        kc[name] = kc.get(name, 0) + 1
+    except FileNotFoundError:
+        pass
+    return kc
+ 
+ 
+def compute_weekly(counts, kings, now):
+    """토요일용 누적 레이스: 판매왕 횟수 TOP5, 꾸준왕(참여일수) TOP5."""
+    today_str = now.strftime("%Y-%m-%d")
+    hist = load_month_history(today_str)
+    cum, days = {}, {}
+    for d0, name, c in hist:
+        cum[name] = cum.get(name, 0) + c
+        if c > 0:
+            days.setdefault(name, set()).add(d0)
+    for name, c in counts.items():
+        cum[name] = cum.get(name, 0) + c
+        days.setdefault(name, set()).add(today_str)
+    kc = load_month_kings(today_str)
+    for k in kings:
+        kc[k] = kc.get(k, 0) + 1
+    ndays = {n: len(s) for n, s in days.items()}
+    # 판매왕 레이스: 선정횟수 → 누적건수 → 참여일수
+    king_rank = sorted(kc.items(),
+                       key=lambda x: (-x[1], -cum.get(x[0], 0), -ndays.get(x[0], 0)))[:5]
+    # 꾸준왕 레이스: 참여일수 → 누적건수
+    steady_rank = sorted(ndays.items(),
+                         key=lambda x: (-x[1], -cum.get(x[0], 0)))[:5]
+    return {"king_rank": king_rank, "steady_rank": steady_rank, "cum": cum}
+ 
+ 
 def compute_result(counts):
     now = datetime.now(KST)
     people = list(counts.keys())
@@ -296,6 +339,8 @@ def compute_result(counts):
         "sat": now.weekday() == 5,
     }
     res.update(compute_extras(counts, now))
+    if res["sat"]:
+        res.update(compute_weekly(counts, kings, now))
     return res
  
  
@@ -362,6 +407,19 @@ def build_message(res):
         for name, streak in res["nosales"]:
             cheer = random.choice(NOSALE_CHEERS)
             lines.append(f"  · {name} 님, {streak}일째 잠잠… {cheer}")
+ 
+    if res.get("king_rank") or res.get("steady_rank"):
+        cum = res.get("cum", {})
+        lines.append("")
+        lines.append(f"📊 이번 주까지 누적 레이스 ({res['md']} 기준)")
+        if res.get("king_rank"):
+            lines.append("👑 판매왕 레이스 (일일 판매왕 선정 횟수)")
+            for i, (name, c) in enumerate(res["king_rank"], 1):
+                lines.append(f"  {i}위 {name} — {c}회 (누적 {cum.get(name, 0)}건)")
+        if res.get("steady_rank"):
+            lines.append("🏅 꾸준왕 레이스 (실적 발생일수)")
+            for i, (name, d0) in enumerate(res["steady_rank"], 1):
+                lines.append(f"  {i}위 {name} — {d0}일 (누적 {cum.get(name, 0)}건)")
  
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
