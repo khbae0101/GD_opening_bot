@@ -197,11 +197,13 @@ def compute_extras(counts, now):
             milestones.append((name, (new // 5) * 5))
     milestones.sort(key=lambda x: -x[1])
  
-    # ② 지사 골든벨 (월 누적 100건 단위 돌파, N번째 건의 주인공)
+    # ② 지사 골든벨 (월 누적 100건 단위 돌파) — 현재 미운영(공유 누락으로 실제와 차이).
+    #    다시 켜려면 아래 GOLDENBELL_ON 을 True 로 바꾸면 됩니다.
+    GOLDENBELL_ON = False
     total_prev = sum(prev_cum.values())
     total_new = total_prev + sum(counts.values())
     goldenbell = None
-    if total_new // 100 > total_prev // 100:
+    if GOLDENBELL_ON and total_new // 100 > total_prev // 100:
         threshold = (total_prev // 100 + 1) * 100
         running = total_prev
         for name, c in counts.items():   # 보고 순서(근사)
