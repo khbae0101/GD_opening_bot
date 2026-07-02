@@ -172,6 +172,10 @@ def workdays(d1, d2):
 NOSALE_CHEERS = ["내일 첫 테이프 끊어봐요!", "곧 터질 거예요, 파이팅!",
                  "내일은 꼭 1건! 응원해요!", "슬슬 시동 걸어볼까요?"]
  
+STEADY_CHEERS = {5: "좋은 페이스예요!", 10: "꾸준함이 실력입니다!",
+                 15: "이달의 개근왕 예약!", 20: "전설의 꾸준함!",
+                 25: "경이로운 기록입니다!"}
+ 
  
 def compute_extras(counts, now):
     """월 단위 프로모션 계산: 5건 달성 / 골든벨 / 데뷔 / 컴백 / 무실적 응원."""
@@ -247,8 +251,33 @@ def compute_extras(counts, now):
                 nosales.append((name, streak))
         nosales.sort(key=lambda x: -x[1])
  
+    # ⑥ 꾸준왕 (이달 참여일수가 오늘로 5일 단위에 도달한 사람)
+    steadies = []
+    part_days = {}
+    for d0, name, c in hist:
+        if c > 0:
+            part_days.setdefault(name, set()).add(d0)
+    for name in counts:
+        days = len(part_days.get(name, set())) + 1   # 오늘 포함
+        if days >= 5 and days % 5 == 0:
+            steadies.append((name, days))
+    steadies.sort(key=lambda x: -x[1])
+ 
+    # ⑦ 매장 완전체 (명단 기준 매장 전원이 오늘 1건 이상)
+    full_stores = []
+    if roster:
+        by_store = {}
+        for full in roster:
+            store = full.split(" ", 1)[0]
+            by_store.setdefault(store, []).append(full)
+        for store, members in by_store.items():
+            if members and all(m in counts for m in members):
+                names_only = [m.split(" ", 1)[1] for m in members]
+                full_stores.append((store, names_only))
+ 
     return {"milestones": milestones, "goldenbell": goldenbell,
-            "debuts": debuts, "comebacks": comebacks, "nosales": nosales}
+            "debuts": debuts, "comebacks": comebacks, "nosales": nosales,
+            "steadies": steadies, "full_stores": full_stores}
  
  
 def compute_result(counts):
@@ -300,6 +329,20 @@ def build_message(res):
         lines.append("🔔 지사 골든벨")
         lines.append(f"  오늘 우리 지사 월누적 {n}건 돌파! 🎊")
         lines.append(f"  {n}번째 주인공: {name} 님")
+ 
+    if res.get("steadies"):
+        lines.append("")
+        lines.append("🏅 꾸준왕")
+        for name, days in res["steadies"]:
+            cheer = STEADY_CHEERS.get(days, "대단한 꾸준함이에요!")
+            lines.append(f"  · {name} 님, 이달 {days}일째 참여! {cheer}")
+ 
+    if res.get("full_stores"):
+        lines.append("")
+        lines.append("🎖 매장 완전체")
+        for store, names in res["full_stores"]:
+            lines.append(f"  · 오늘 {store}, 전원 실적 달성! 완벽한 팀워크 👏")
+            lines.append(f"    ({' · '.join(names)})")
  
     if res.get("debuts"):
         lines.append("")
