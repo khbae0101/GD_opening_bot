@@ -7,35 +7,35 @@
   · 휴대폰 모델명으로 시작하는 개통 줄 1개 = 1건 (한 사람이 여러 건 가능)
   · 유선(에센스/베이직/모든G/MITT/GTT 등), 2nd기기(워치·패드·버즈), 약정갱신은 제외
 - 판매왕(그날 최고 건수 전원) + 럭키추첨(1건 이상 공유자 중 랜덤 1명) 발표.
-
+ 
 비밀값(Secrets): TELEGRAM_TOKEN_3 / TARGET_CHAT_ID_3 / ANTHROPIC_API_KEY
 * 방의 실적 글을 읽어야 하므로 강동요정봇의 Group Privacy를 꺼야 합니다.
 """
-
+ 
 import os
 import csv
 import json
 import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
+ 
 import requests
 import anthropic
-
+ 
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN_3"]
 CHAT_ID           = int(os.environ["TARGET_CHAT_ID_3"])
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL             = "claude-sonnet-4-6"
 KST = ZoneInfo("Asia/Seoul")
 TG  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
+ 
 AWARD_CSV = "data/award_results.csv"   # 일별 시상 결과
 SALES_CSV = "data/daily_sales.csv"     # 일별 개인 실적
-
+ 
 COUNT_SYSTEM = ("너는 휴대폰 판매 실적 보고를 분석해 직원별 개통 건수를 세는 도구야. "
                 "반드시 지정된 JSON만 출력하고 다른 말은 하지 마.")
-
-
+ 
+ 
 def fetch_messages():
     """방의 새 메시지(텍스트)를 가져오면서 동시에 확인 처리(offset 전진)."""
     texts, offset = [], None
@@ -56,19 +56,19 @@ def fetch_messages():
                 continue
             texts.append(m["text"])
     return texts
-
-
+ 
+ 
 def looks_like_report(t):
     """실적 보고로 보이는 메시지만 추려서 토큰 절약(잡담 제외)."""
     keys = ["기변", "신규", "번이", "MNP", "mnp", "공시", "요할", "심플"]
     return any(k in t for k in keys)
-
-
+ 
+ 
 def count_sales(reports):
     """AI로 직원별 휴대폰 개통 건수를 집계해 dict로 반환."""
     body = "\n\n──\n\n".join(reports)
     prompt = f"""아래는 오늘 단체방에 올라온 휴대폰 판매 실적 보고들이야. 직원별 '휴대폰 개통 건수'를 세줘.
-
+ 
 # 세는 규칙
 - 보통 "점명 이름"(예: 중계 전우진) 줄 다음에 개통 내역 줄이 온다.
 - 개통 내역 줄은 "모델명/개통유형/요금제/부가/보험/카드/리본" 형식이고, 휴대폰 모델명으로 시작한다(A175, S948, F966, AIP17, M366, ZTE 클래식폴더 등).
@@ -78,34 +78,45 @@ def count_sales(reports):
 - 맨 앞 글 작성자 줄("...님:" 또는 "이름:")은 무시하고 "점명 이름"으로 집계한다.
 - 이름 줄 없이 개통 줄만 이어지면 바로 위 사람 것으로 본다.
 - 점명이 줄임말/다른 표기로 적혀도 표준 점명으로 통일해서 기록한다. 특히 "덕계", "양주덕계점"은 "양주덕계"로 기록한다. (단, "양주"만 단독으로 적힌 경우는 옥정신도시와 구분이 안 되니 적힌 그대로 둔다.)
-
+ 
 # 출력 형식 (JSON만, 머리말·설명·코드블록 없이)
 {{"counts": [{{"name": "점명 이름", "count": 건수}}, ...]}}
-
+ 
 # 보고 내용
 {body}
 """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     resp = client.messages.create(
-        model=MODEL, max_tokens=2000,
+        model=MODEL, max_tokens=4000,
         system=COUNT_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
-    text = resp.content[0].text.strip()
+    text = (resp.content[0].text if resp.content else "").strip()
     if "```" in text:
         text = text.split("```")[1].replace("json", "", 1).strip() if text.count("```") >= 2 else text
-    if "{" in text:
+    if "{" in text and "}" in text:
         text = text[text.index("{"):text.rindex("}") + 1]
-    data = json.loads(text)
+    else:
+        # JSON이 아예 없으면(빈 응답 등) 그날은 집계 없음으로 처리(크래시 방지)
+        print(f"[시상] AI 응답에 JSON이 없어 집계를 건너뜁니다. 응답 일부: {text[:200]!r}")
+        return {}
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        print(f"[시상] JSON 파싱 실패: {e!r} · 응답 일부: {text[:200]!r}")
+        return {}
     result = {}
     for it in data.get("counts", []):
         name = str(it.get("name", "")).strip()
-        cnt = int(it.get("count", 0))
+        try:
+            cnt = int(it.get("count", 0))
+        except Exception:
+            cnt = 0
         if name and cnt > 0:
             result[name] = result.get(name, 0) + cnt
     return result
-
-
+ 
+ 
 def compute_result(counts):
     now = datetime.now(KST)
     people = list(counts.keys())
@@ -121,8 +132,8 @@ def compute_result(counts):
         "top": top, "kings": kings, "luckies": luckies, "counts": counts,
         "sat": now.weekday() == 5,
     }
-
-
+ 
+ 
 def build_message(res):
     lines = [f"⭐ 오늘의 판매스타 ({res['md']}) ⭐", ""]
     lines.append(f"오늘 실적 공유에 참여해주신 {len(res['people'])}분, 모두 고생 많으셨어요!")
@@ -143,8 +154,8 @@ def build_message(res):
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
     return "\n".join(lines)
-
-
+ 
+ 
 def _upsert_csv(path, header, rows, date_str):
     """같은 날짜 줄은 지우고 새로 기록(중복 방지). Excel용 utf-8-sig."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -157,8 +168,8 @@ def _upsert_csv(path, header, rows, date_str):
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(sorted(existing + rows, key=lambda r: r[0]))
-
-
+ 
+ 
 def write_csv(res):
     d = res["date"]
     # 시상 결과
@@ -170,8 +181,8 @@ def write_csv(res):
     rows = [[d, name, cnt] for name, cnt in sorted(res["counts"].items(),
                                                    key=lambda x: -x[1])]
     _upsert_csv(SALES_CSV, ["날짜", "점명이름", "건수"], rows, d)
-
-
+ 
+ 
 def main():
     msgs = [t for t in fetch_messages() if looks_like_report(t)]
     if not msgs:
@@ -187,7 +198,8 @@ def main():
                   json={"chat_id": CHAT_ID, "text": text}, timeout=30)
     write_csv(res)   # 데이터 기록 (GitHub에 저장됨)
     print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건 · CSV 기록 완료")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
+ 
