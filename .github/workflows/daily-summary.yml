@@ -15,8 +15,11 @@ jobs:
         with:
           python-version: '3.12'
  
+      - name: Install Korean fonts
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+ 
       - name: Install dependencies
-        run: pip install requests anthropic
+        run: pip install requests anthropic pillow
  
       - name: Run summary
         env:
