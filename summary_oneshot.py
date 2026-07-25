@@ -39,6 +39,23 @@ STORE_MAP = {
                 "강릉유천", "홍천중앙", "후평", "온의"],
 }
 AREA_SHORT = {"광진/구리": "광구", "경기북부": "경북", "강원": "강원"}
+# 표(이미지)에서만 짧게 표시할 매장명. 실제 매칭·명단은 원래 이름 그대로 사용.
+STORE_SHORT = {"의정부로데오": "의정부"}
+ 
+ 
+def load_managers():
+    """data/roster.csv에서 매장별 점장 이름 {매장: 이름}. 없으면 빈 dict."""
+    import csv
+    mgr = {}
+    try:
+        with open("data/roster.csv", newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        for r in rows[1:]:
+            if len(r) >= 3 and r[2].strip() == "점장":
+                mgr[r[0].strip()] = r[1].strip()
+    except Exception as e:
+        print(f"[출근] 점장 명단 로드 실패({e!r}) - 점장 표시 없이 진행")
+    return mgr
  
  
 def fetch_messages():
@@ -134,8 +151,9 @@ def _font(bold, size):
     return ImageFont.load_default()
  
  
-def render_image(data, today_label, path="attend.png"):
+def render_image(data, today_label, path="attend.png", managers=None):
     from PIL import Image, ImageDraw
+    managers = managers or {}
  
     # data: {store: {"work": [...], "off": [...], "note": ""}}
     W, M = 1080, 28
@@ -149,8 +167,10 @@ def render_image(data, today_label, path="attend.png"):
     f_note = _font(False, 26); f_foot = _font(False, 22)
     f_noteh = _font(True, 30)
  
-    COLS = [M, M + 86, M + 266, M + 334, M + 790, W - M]
-    LABELS = ["상권", "매장", "총원", "근무자", "휴무자"]
+    MGR = (0, 96, 108)   # 점장 이름 강조색(진한 틸)
+    COLS = [M, M + 66, M + 230, M + 288, M + 346, M + 404, M + 780, W - M]
+    LABELS = ["상권", "매장", "총원", "근무", "점장", "근무자", "휴무자"]
+    IDX_WORK, IDX_OFF = 5, 6   # 근무자·휴무자 열 시작 인덱스
     ROW = 52
  
     def wrap(text, font, maxw, d):
@@ -170,20 +190,25 @@ def render_image(data, today_label, path="attend.png"):
  
     tmp = ImageDraw.Draw(Image.new("RGB", (10, 10)))
  
-    def row_h(work_str):
-        n = len(wrap(work_str, f_cell, COLS[4] - COLS[3] - 24, tmp))
+    WORK_W = COLS[IDX_OFF] - COLS[IDX_WORK] - 24
+    OFF_W = COLS[IDX_OFF + 1] - COLS[IDX_OFF] - 24
+ 
+    def row_h(work_str, off_str=""):
+        n = max(len(wrap(work_str, f_cell, WORK_W, tmp)),
+                len(wrap(off_str, f_cell, OFF_W, tmp)))
         return max(ROW, 30 * n + 20)
  
     # 특이사항 목록 (미등록은 한 줄로 묶고, note는 매장별로)
     notes = []
-    missing = [s for area, ss in STORE_MAP.items() for s in ss if s not in data]
+    missing = [STORE_SHORT.get(s, s) for area, ss in STORE_MAP.items()
+               for s in ss if s not in data]
     if missing:
         notes.append(("미등록", ", ".join(missing)))
     for area, stores in STORE_MAP.items():
         for s in stores:
             info = data.get(s)
             if info and info.get("note"):
-                notes.append((s, info["note"]))
+                notes.append((STORE_SHORT.get(s, s), info["note"]))
  
     tot_work = sum(len(v.get("work", [])) for v in data.values())
     tot_off = sum(len(v.get("off", [])) for v in data.values())
@@ -195,7 +220,7 @@ def render_image(data, today_label, path="attend.png"):
     for area, stores in STORE_MAP.items():
         for s in stores:
             info = data.get(s, {})
-            H += row_h(" ".join(info.get("work", [])))
+            H += row_h(" ".join(info.get("work", [])), ", ".join(info.get("off", [])))
     H += 40 + 46 + max(len(notes), 1) * 36 + 160   # 특이사항 줄바꿈 여유
  
     img = Image.new("RGB", (W, H), (255, 255, 255))
@@ -219,23 +244,52 @@ def render_image(data, today_label, path="attend.png"):
             info = data.get(s)
             work = " ".join(info.get("work", [])) if info else ""
             off = ", ".join(info.get("off", [])) if info else ""
-            h = row_h(work)
+            h = row_h(work, off)
             if ri % 2:
                 d.rectangle([COLS[1], y, W - M, y + h], fill=ALT)
             total = (len(info.get("work", [])) + len(info.get("off", []))) if info else 0
-            d.text((COLS[1] + 14, y + h / 2), s, font=f_cellb, fill=DARK, anchor="lm")
+            n_work = len(info.get("work", [])) if info else 0
+            d.text((COLS[1] + 14, y + h / 2), STORE_SHORT.get(s, s), font=f_cellb,
+                   fill=DARK, anchor="lm")
             d.text(((COLS[2] + COLS[3]) / 2, y + h / 2), str(total) if total else "-",
                    font=f_cell, fill=DARK, anchor="mm")
-            if info is None:
-                d.text((COLS[3] + 14, y + h / 2), "미등록", font=f_cellb, fill=RED, anchor="lm")
+            d.text(((COLS[3] + COLS[4]) / 2, y + h / 2), str(n_work) if info else "-",
+                   font=f_cellb if n_work else f_cell, fill=TEAL if n_work else LINE,
+                   anchor="mm")
+            # 점장 근무 여부 (O / X)
+            mgr_name = managers.get(s)
+            if info is None or not mgr_name:
+                mark, mcolor, mfont = "-", LINE, f_cell
+            elif mgr_name in info.get("work", []):
+                mark, mcolor, mfont = "O", MGR, f_cellb
             else:
-                ls = wrap(work, f_cell, COLS[4] - COLS[3] - 24, d)
+                mark, mcolor, mfont = "X", RED, f_cell
+            d.text(((COLS[4] + COLS[5]) / 2, y + h / 2), mark, font=mfont,
+                   fill=mcolor, anchor="mm")
+            if info is None:
+                d.text((COLS[IDX_WORK] + 14, y + h / 2), "미등록", font=f_cellb,
+                       fill=RED, anchor="lm")
+            else:
+                ls = wrap(work, f_cell, WORK_W, d)
                 ty = y + h / 2 - (len(ls) - 1) * 15
                 for l in ls:
-                    d.text((COLS[3] + 14, ty), l, font=f_cell, fill=TEAL, anchor="lm")
+                    tx = COLS[IDX_WORK] + 14
+                    for tok in l.split():          # 이름 단위로 그려 점장만 강조
+                        is_mgr = (tok == mgr_name)
+                        fnt = f_cellb if is_mgr else f_cell
+                        d.text((tx, ty), tok, font=fnt,
+                               fill=MGR if is_mgr else TEAL, anchor="lm")
+                        tx += d.textlength(tok + " ", font=fnt)
                     ty += 30
-            d.text((COLS[4] + 14, y + h / 2), off if off else "-", font=f_cell,
-                   fill=GRAY if off else LINE, anchor="lm")
+            if off:
+                ols = wrap(off, f_cell, OFF_W, d)
+                oy = y + h / 2 - (len(ols) - 1) * 15
+                for l in ols:
+                    d.text((COLS[IDX_OFF] + 14, oy), l, font=f_cell, fill=GRAY, anchor="lm")
+                    oy += 30
+            else:
+                d.text((COLS[IDX_OFF] + 14, y + h / 2), "-", font=f_cell,
+                       fill=LINE, anchor="lm")
             d.line([COLS[1], y + h, W - M, y + h], fill=LINE, width=1)
             y += h
             ri += 1
@@ -325,8 +379,11 @@ def main():
                           "note": str(it.get("note", "")).strip()}
     print(f"[출근] 등록 매장 {len(data)}곳")
  
+    managers = load_managers()
+    print(f"[출근] 점장 명단 {len(managers)}개 매장")
+ 
     try:
-        path, summary = render_image(data, today_label)
+        path, summary = render_image(data, today_label, managers=managers)
         if send_photo(path, f"📋 출근 현황 · {summary}"):
             print("출근 현황 이미지 게시 완료")
             return
