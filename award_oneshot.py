@@ -35,7 +35,8 @@ FOLD8_CSV = "data/fold8_series_sales.csv"  # 폴드8 시리즈 일별 판매 (�
 FOLD8_START = "2026-07-22"   # 사전예약 시작일(집계 시작 기준)
 
 COUNT_SYSTEM = ("너는 휴대폰 판매 실적 보고를 분석해 직원별 개통 건수를 세는 도구야. "
-                "반드시 지정된 JSON만 출력하고 다른 말은 하지 마.")
+                "계산·판단은 머릿속으로만 하고, 설명·메모·중간 과정·머리말을 절대 출력하지 마. "
+                "응답은 '{'로 시작해 '}'로 끝나는 JSON 객체 하나뿐이어야 한다.")
 
 
 def fetch_messages():
@@ -118,7 +119,9 @@ def count_sales(reports):
 - 맨 앞 글 작성자 줄("...님:" 또는 "이름:")은 무시하고 "점명 이름"으로 집계한다.
 - 이름 줄 없이 개통 줄만 이어지면 바로 위 사람 것으로 본다.
 
-# 출력 형식 (JSON만, 머리말·설명·코드블록 없이)
+# 출력 형식 (매우 중요)
+- 파싱 메모·판단 근거·중간 계산을 절대 쓰지 마라. 오직 아래 JSON 하나만 출력한다.
+- 응답의 첫 글자는 "{", 마지막 글자는 "}" 여야 한다. 코드블록(```)도 쓰지 마라.
 {{"counts": [{{"name": "점명 이름", "count": 건수}}, ...],
  "fold8_series": {{"폴드8": 건수, "폴드8 울트라": 건수, "플립8": 건수}}}}
 (fold8_series는 오늘 보고 전체에서 F971/폴드8, F976/폴드8 울트라, F776/플립8 각각의 총 개통 건수.
@@ -129,24 +132,35 @@ def count_sales(reports):
 {body}
 """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    resp = client.messages.create(
-        model=MODEL, max_tokens=4000,
-        system=COUNT_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = (resp.content[0].text if resp.content else "").strip()
-    if "```" in text:
-        text = text.split("```")[1].replace("json", "", 1).strip() if text.count("```") >= 2 else text
-    if "{" in text and "}" in text:
-        text = text[text.index("{"):text.rindex("}") + 1]
-    else:
-        # JSON이 아예 없으면(빈 응답 등) 그날은 집계 없음으로 처리(크래시 방지)
-        print(f"[시상] AI 응답에 JSON이 없어 집계를 건너뜁니다. 응답 일부: {text[:200]!r}")
-        return {}, {}
-    try:
-        data = json.loads(text)
-    except Exception as e:
-        print(f"[시상] JSON 파싱 실패: {e!r} · 응답 일부: {text[:200]!r}")
+    data = None
+    for attempt in (1, 2):
+        try:
+            resp = client.messages.create(
+                model=MODEL, max_tokens=8000,
+                system=COUNT_SYSTEM,
+                messages=[
+                    {"role": "user", "content": prompt},
+                    # 응답을 '{'로 시작하게 강제 → 설명글·머리말 원천 차단
+                    {"role": "assistant", "content": "{"},
+                ],
+            )
+        except Exception as e:
+            print(f"[시상] AI 호출 실패({attempt}차): {e!r}")
+            continue
+        text = "{" + (resp.content[0].text if resp.content else "")
+        if resp.stop_reason == "max_tokens":
+            print(f"[시상] 경고: 응답이 길이 제한에 걸림({attempt}차)")
+        if "```" in text:
+            text = text.split("```")[1].replace("json", "", 1).strip() if text.count("```") >= 2 else text
+        if "{" in text and "}" in text:
+            text = text[text.index("{"):text.rindex("}") + 1]
+        try:
+            data = json.loads(text)
+            break
+        except Exception as e:
+            print(f"[시상] JSON 파싱 실패({attempt}차): {e!r} · 응답 일부: {text[:200]!r}")
+    if data is None:
+        print("[시상] 집계 실패 - 게시하지 않습니다.")
         return {}, {}
     result = {}
     for it in data.get("counts", []):
