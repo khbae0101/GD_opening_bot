@@ -7,66 +7,83 @@
   · 휴대폰 모델명으로 시작하는 개통 줄 1개 = 1건 (한 사람이 여러 건 가능)
   · 유선(에센스/베이직/모든G/MITT/GTT 등), 2nd기기(워치·패드·버즈), 약정갱신은 제외
 - 판매왕(그날 최고 건수 전원) + 럭키추첨(1건 이상 공유자 중 랜덤 1명) 발표.
-
+ 
 비밀값(Secrets): TELEGRAM_TOKEN_3 / TARGET_CHAT_ID_3 / ANTHROPIC_API_KEY
 * 방의 실적 글을 읽어야 하므로 강동요정봇의 Group Privacy를 꺼야 합니다.
 """
-
+ 
 import os
 import csv
 import json
 import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
+ 
 import requests
 import anthropic
-
+ 
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN_3"]
 CHAT_ID           = int(os.environ["TARGET_CHAT_ID_3"])
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL             = "claude-sonnet-4-6"
 KST = ZoneInfo("Asia/Seoul")
 TG  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
+ 
 AWARD_CSV = "data/award_results.csv"   # 일별 시상 결과
 SALES_CSV = "data/daily_sales.csv"     # 일별 개인 실적
 FOLD8_CSV = "data/fold8_series_sales.csv"  # 폴드8 시리즈 일별 판매 (모델별)
 FOLD8_START = "2026-07-22"   # 사전예약 시작일(집계 시작 기준)
-
+ 
 COUNT_SYSTEM = ("너는 휴대폰 판매 실적 보고를 분석해 직원별 개통 건수를 세는 도구야. "
                 "계산·판단은 머릿속으로만 하고, 설명·메모·중간 과정·머리말을 절대 출력하지 마. "
                 "응답은 '{'로 시작해 '}'로 끝나는 JSON 객체 하나뿐이어야 한다.")
-
-
+ 
+ 
 def fetch_messages():
     """방의 새 메시지(텍스트)를 가져오면서 동시에 확인 처리(offset 전진)."""
     texts, offset = [], None
+    n_updates = 0          # 받은 업데이트 총 개수
+    chat_seen = {}         # 어떤 방에서 몇 건 왔는지 (방ID 변경 감지용)
     while True:
         params = {"timeout": 0, "limit": 100}
         if offset is not None:
             params["offset"] = offset
-        r = requests.get(f"{TG}/getUpdates", params=params, timeout=30).json()
+        try:
+            r = requests.get(f"{TG}/getUpdates", params=params, timeout=30).json()
+        except Exception as e:
+            print(f"[시상] getUpdates 호출 실패: {e!r}")
+            break
+        if not r.get("ok", False):
+            print(f"[시상] 텔레그램 API 오류: {r.get('error_code')} {r.get('description')!r}")
+            break
         batch = r.get("result", [])
         if not batch:
             break
+        n_updates += len(batch)
         for u in batch:
             offset = u["update_id"] + 1
             m = u.get("message") or u.get("channel_post")
             if not m or not m.get("text"):
                 continue
-            if m["chat"]["id"] != CHAT_ID:
+            cid = m["chat"]["id"]
+            chat_seen[cid] = chat_seen.get(cid, 0) + 1
+            if cid != CHAT_ID:
                 continue
             texts.append(m["text"])
+    print(f"[시상] 업데이트 {n_updates}건 수신 · 방별 분포 {chat_seen} "
+          f"· 대상방({CHAT_ID}) 메시지 {len(texts)}건")
+    if chat_seen and not texts:
+        print("[시상] ⚠️ 메시지는 있는데 대상 방 ID와 일치하는 게 없습니다. "
+              "방이 슈퍼그룹으로 전환돼 ID가 바뀌었을 수 있으니 TARGET_CHAT_ID_3를 확인하세요.")
     return texts
-
-
+ 
+ 
 def looks_like_report(t):
     """실적 보고로 보이는 메시지만 추려서 토큰 절약(잡담 제외)."""
     keys = ["기변", "신규", "번이", "MNP", "mnp", "공시", "요할", "심플"]
     return any(k in t for k in keys)
-
-
+ 
+ 
 def load_roster():
     """표준 인원 명단(data/roster.csv)을 읽어 '매장 이름' 목록으로 반환. 없으면 빈 리스트."""
     path = "data/roster.csv"
@@ -77,8 +94,8 @@ def load_roster():
     except Exception as e:
         print(f"[시상] 명단 로드 실패({e!r}) - 명단 없이 진행")
         return []
-
-
+ 
+ 
 def count_sales(reports):
     """AI로 직원별 휴대폰 개통 건수를 집계해 dict로 반환."""
     body = "\n\n──\n\n".join(reports)
@@ -88,7 +105,7 @@ def count_sales(reports):
         roster_block = f"""
 # 표준 인원 명단 ("매장 이름" — 이 표기가 기준이야)
 {chr(10).join(roster)}
-
+ 
 # 명단 매칭 규칙
 - 보고의 점명·이름을 위 명단과 매칭해서, 기록은 반드시 명단의 "매장 이름" 표기로 통일한다.
   (예: "의로 김해진", "의정부 김해진" → "의정부로데오 김해진")
@@ -108,7 +125,7 @@ def count_sales(reports):
 - 모델명만 단독으로 한 줄에 있고 개통 조건이 다음 줄에 이어져도 그 묶음 전체를 1건으로 센다
   (예: "폴드8 울트라" 줄 + 다음 줄 "120K+워치+에어팟프로" → 합쳐서 1건).
 - 휴대폰 모델명으로 시작하는 줄 1개 = 1건. 한 사람 아래 개통 줄이 2~3개면 그만큼 여러 건으로 센다. 신모델도 동일하게 1건으로 센다.
-
+ 
 # 세지 않는 안내 문구 (매우 중요)
 - "폴더블8"은 시리즈 행사 명칭이지 모델명이 아니다. "폴더블8 사전예약", "폴더블8 사전예약 (락인완)" 같은 줄은
   개통 건이 아니라 안내 머리말이므로 절대 세지 마라. ("폴드8"과 "폴더블8"은 다른 말이다.)
@@ -118,7 +135,7 @@ def count_sales(reports):
 - 휴대폰 신규/기변/번이/MNP/공시 개통만 센다.
 - 맨 앞 글 작성자 줄("...님:" 또는 "이름:")은 무시하고 "점명 이름"으로 집계한다.
 - 이름 줄 없이 개통 줄만 이어지면 바로 위 사람 것으로 본다.
-
+ 
 # 출력 형식 (매우 중요)
 - 파싱 메모·판단 근거·중간 계산을 절대 쓰지 마라. 오직 아래 JSON 하나만 출력한다.
 - 응답의 첫 글자는 "{", 마지막 글자는 "}" 여야 한다. 코드블록(```)도 쓰지 마라.
@@ -127,7 +144,7 @@ def count_sales(reports):
 (fold8_series는 오늘 보고 전체에서 F971/폴드8, F976/폴드8 울트라, F776/플립8 각각의 총 개통 건수.
  띄어쓰기·표기가 달라도("폴드8울트라" 등) 해당 모델로 합산하고, 위 '세지 않는 안내 문구'는 제외한다. 없으면 0.
  counts의 총합과 모순되지 않게, fold8_series 합계는 counts에 포함된 건들 중 해당 모델 건수만 센다.)
-
+ 
 # 보고 내용
 {body}
 """
@@ -180,8 +197,8 @@ def count_sales(reports):
         if c > 0:
             fold8[model] = c
     return result, fold8
-
-
+ 
+ 
 def load_month_history(today_str):
     """이번 달, 오늘 이전 날짜의 개인 실적 이력 [(날짜, 이름, 건수)]."""
     hist = []
@@ -198,8 +215,8 @@ def load_month_history(today_str):
     except FileNotFoundError:
         pass
     return hist
-
-
+ 
+ 
 def workdays(d1, d2):
     """d1~d2(포함) 사이 일요일을 뺀 날짜 수. d1이 d2보다 뒤면 0."""
     n, d = 0, d1
@@ -208,16 +225,16 @@ def workdays(d1, d2):
             n += 1
         d += timedelta(days=1)
     return n
-
-
+ 
+ 
 NOSALE_CHEERS = ["내일 첫 테이프 끊어봐요!", "곧 터질 거예요, 파이팅!",
                  "내일은 꼭 1건! 응원해요!", "슬슬 시동 걸어볼까요?"]
-
+ 
 STEADY_CHEERS = {5: "좋은 페이스예요!", 10: "꾸준함이 실력입니다!",
                  15: "이달의 개근왕 예약!", 20: "전설의 꾸준함!",
                  25: "경이로운 기록입니다!"}
-
-
+ 
+ 
 def compute_extras(counts, now):
     """월 단위 프로모션 계산: 5건 달성 / 골든벨 / 데뷔 / 컴백 / 무실적 응원."""
     today_str = now.strftime("%Y-%m-%d")
@@ -226,13 +243,13 @@ def compute_extras(counts, now):
     hist = load_month_history(today_str)
     roster = load_roster()
     rset = set(roster)
-
+ 
     prev_cum, last_sale = {}, {}
     for d, name, c in hist:
         prev_cum[name] = prev_cum.get(name, 0) + c
         if c > 0 and (name not in last_sale or d > last_sale[name]):
             last_sale[name] = d
-
+ 
     # ① 5건 단위 달성 (오늘 실적으로 5의 배수를 새로 넘은 사람)
     milestones = []
     for name, c in counts.items():
@@ -241,7 +258,7 @@ def compute_extras(counts, now):
         if new // 5 > prev // 5:
             milestones.append((name, (new // 5) * 5))
     milestones.sort(key=lambda x: -x[1])
-
+ 
     # ② 지사 골든벨 (월 누적 100건 단위 돌파) — 현재 미운영(공유 누락으로 실제와 차이).
     #    다시 켜려면 아래 GOLDENBELL_ON 을 True 로 바꾸면 됩니다.
     GOLDENBELL_ON = False
@@ -256,11 +273,11 @@ def compute_extras(counts, now):
             if running >= threshold:
                 goldenbell = (threshold, name)
                 break
-
+ 
     # ③ 데뷔 축하 (명단에 없고 이번 달 첫 등장 = 신규 입사 추정, 최초 1회)
     seen_before = set(n for _, n, _ in hist)
     debuts = [n for n in counts if rset and n not in rset and n not in seen_before]
-
+ 
     # ④ 컴백 축하 (일요일 제외 5일 이상 무실적이었다가 오늘 실적 발생, 명단 직원만)
     comebacks = []
     for name in counts:
@@ -276,7 +293,7 @@ def compute_extras(counts, now):
         gap = workdays(gap_from, today - timedelta(days=1))
         if gap >= 5:
             comebacks.append((name, workdays(gap_from, today)))
-
+ 
     # ⑤ 무실적 응원 (명단 직원 중 오늘도 실적 없음, 일요일 제외 5일 단위 그날만)
     nosales = []
     if roster and hist:   # 명단·이력 있어야 의미 있음
@@ -291,7 +308,7 @@ def compute_extras(counts, now):
             if streak >= 5 and streak % 5 == 0:
                 nosales.append((name, streak))
         nosales.sort(key=lambda x: -x[1])
-
+ 
     # ⑥ 꾸준왕 (이달 참여일수가 오늘로 5일 단위에 도달한 사람)
     steadies = []
     part_days = {}
@@ -303,7 +320,7 @@ def compute_extras(counts, now):
         if days >= 5 and days % 5 == 0:
             steadies.append((name, days))
     steadies.sort(key=lambda x: -x[1])
-
+ 
     # ⑦ 매장 완전체 (명단 기준 매장 전원이 오늘 1건 이상)
     full_stores = []
     if roster:
@@ -315,12 +332,12 @@ def compute_extras(counts, now):
             if members and all(m in counts for m in members):
                 names_only = [m.split(" ", 1)[1] for m in members]
                 full_stores.append((store, names_only))
-
+ 
     return {"milestones": milestones, "goldenbell": goldenbell,
             "debuts": debuts, "comebacks": comebacks, "nosales": nosales,
             "steadies": steadies, "full_stores": full_stores}
-
-
+ 
+ 
 def load_month_kings(today_str):
     """이번 달 award_results.csv에서 일일 판매왕 선정 횟수 집계."""
     kc = {}
@@ -337,8 +354,8 @@ def load_month_kings(today_str):
     except FileNotFoundError:
         pass
     return kc
-
-
+ 
+ 
 def compute_weekly(counts, kings, now):
     """토요일용 누적 레이스: 판매왕 횟수 TOP5, 꾸준왕(참여일수) TOP5."""
     today_str = now.strftime("%Y-%m-%d")
@@ -362,8 +379,8 @@ def compute_weekly(counts, kings, now):
     steady_rank = sorted(ndays.items(),
                          key=lambda x: (-x[1], -cum.get(x[0], 0)))[:5]
     return {"king_rank": king_rank, "steady_rank": steady_rank, "cum": cum}
-
-
+ 
+ 
 def load_fold8_history(today_str):
     """사전예약 시작일 이후, 오늘 이전까지의 폴드8 시리즈 이력 {모델: 누적건수}."""
     cum = {}
@@ -376,8 +393,8 @@ def load_fold8_history(today_str):
     except FileNotFoundError:
         pass
     return cum
-
-
+ 
+ 
 def compute_result(counts, fold8=None):
     now = datetime.now(KST)
     people = list(counts.keys())
@@ -396,7 +413,7 @@ def compute_result(counts, fold8=None):
     res.update(compute_extras(counts, now))
     if res["sat"]:
         res.update(compute_weekly(counts, kings, now))
-
+ 
     # 폴드8 시리즈 오늘 건수 + 사전예약 시작일 이후 누적
     fold8 = fold8 or {}
     if res["date"] >= FOLD8_START and fold8:
@@ -410,8 +427,8 @@ def compute_result(counts, fold8=None):
         res["fold8_today"] = fold8
         res["fold8_rows"] = rows
     return res
-
-
+ 
+ 
 def build_message(res):
     lines = [f"⭐ 오늘의 판매스타 ({res['md']}) ⭐", ""]
     lines.append(f"오늘 실적 공유에 참여해주신 {len(res['people'])}분, 모두 고생 많으셨어요!")
@@ -429,53 +446,53 @@ def build_message(res):
     for lk in res["luckies"]:
         lines.append(f"  · {lk} 🎉")
     lines.append("축하드려요!")
-
+ 
     if res.get("milestones"):
         lines.append("")
         lines.append("🎯 달성 축하")
         for name, m in res["milestones"]:
             lines.append(f"  · {name} 님, 이달 {m}건 달성! 👏")
-
+ 
     if res.get("goldenbell"):
         n, name = res["goldenbell"]
         lines.append("")
         lines.append("🔔 지사 골든벨")
         lines.append(f"  오늘 우리 지사 월누적 {n}건 돌파! 🎊")
         lines.append(f"  {n}번째 주인공: {name} 님")
-
+ 
     if res.get("steadies"):
         lines.append("")
         lines.append("🏅 꾸준왕")
         for name, days in res["steadies"]:
             cheer = STEADY_CHEERS.get(days, "대단한 꾸준함이에요!")
             lines.append(f"  · {name} 님, 이달 {days}일째 참여! {cheer}")
-
+ 
     if res.get("full_stores"):
         lines.append("")
         lines.append("🎖 매장 완전체")
         for store, names in res["full_stores"]:
             lines.append(f"  · 오늘 {store}, 전원 실적 달성! 완벽한 팀워크 👏")
             lines.append(f"    ({' · '.join(names)})")
-
+ 
     if res.get("debuts"):
         lines.append("")
         lines.append("🌱 데뷔 축하")
         for name in res["debuts"]:
             lines.append(f"  · {name} 님, 첫 실적 신고! 환영합니다!")
-
+ 
     if res.get("comebacks"):
         lines.append("")
         lines.append("🎉 컴백 축하")
         for name, gap in res["comebacks"]:
             lines.append(f"  · {name} 님, {gap}일 만의 복귀! 다시 달려봐요!")
-
+ 
     if res.get("nosales"):
         lines.append("")
         lines.append("💪 응원합니다")
         for name, streak in res["nosales"]:
             cheer = random.choice(NOSALE_CHEERS)
             lines.append(f"  · {name} 님, {streak}일째 잠잠… {cheer}")
-
+ 
     if res.get("king_rank") or res.get("steady_rank"):
         cum = res.get("cum", {})
         lines.append("")
@@ -488,7 +505,7 @@ def build_message(res):
             lines.append("🏅 꾸준왕 레이스 (실적 발생일수)")
             for i, (name, d0) in enumerate(res["steady_rank"], 1):
                 lines.append(f"  {i}위 {name} — {d0}일 (누적 {cum.get(name, 0)}건)")
-
+ 
     if res.get("fold8_rows"):
         lines.append("")
         lines.append("📱 폴드8 시리즈 판매 현황")
@@ -497,12 +514,12 @@ def build_message(res):
         for model, today_c, cum_c in res["fold8_rows"]:
             lines.append(f"  · {model} — 오늘 {today_c}건 · 누적 {cum_c}건")
         lines.append(f"  ▸ 합계 — 오늘 {total_today}건 · 누적 {total_cum}건 (7/22~)")
-
+ 
     lines.append("")
     lines.append("내일도 1인 1건! 우리 지사 파이팅 💪")
     return "\n".join(lines)
-
-
+ 
+ 
 def _upsert_csv(path, header, rows, date_str):
     """같은 날짜 줄은 지우고 새로 기록(중복 방지). Excel용 utf-8-sig."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -515,8 +532,8 @@ def _upsert_csv(path, header, rows, date_str):
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(sorted(existing + rows, key=lambda r: r[0]))
-
-
+ 
+ 
 def write_csv(res):
     d = res["date"]
     # 시상 결과
@@ -533,11 +550,16 @@ def write_csv(res):
     if fold8_today:
         f8rows = [[d, model, cnt] for model, cnt in fold8_today.items()]
         _upsert_csv(FOLD8_CSV, ["날짜", "모델", "건수"], f8rows, d)
-
-
+ 
+ 
 def main():
-    msgs = [t for t in fetch_messages() if looks_like_report(t)]
+    raw = fetch_messages()
+    msgs = [t for t in raw if looks_like_report(t)]
+    print(f"[시상] 실적 보고로 인식 {len(msgs)}건 / 전체 {len(raw)}건")
     if not msgs:
+        if raw:
+            print("[시상] 메시지는 있으나 실적 보고 형식이 아닙니다. 예시: "
+                  f"{raw[0][:120]!r}")
         print("오늘 공유된 실적이 없습니다. 게시하지 않습니다.")
         return
     counts, fold8 = count_sales(msgs)
@@ -551,7 +573,8 @@ def main():
     write_csv(res)   # 데이터 기록 (GitHub에 저장됨)
     print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건"
           f" · 폴드8시리즈 {sum(fold8.values()) if fold8 else 0}건 · CSV 기록 완료")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
+ 
