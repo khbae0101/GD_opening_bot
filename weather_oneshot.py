@@ -491,70 +491,163 @@ def build_news_html():
     return "━━━━━━━━\n" + header + "\n\n" + "\n\n".join(blocks)
  
  
-# ── 입사 기념일 (명단 기반) ───────────────────────
-MONTH_MARKS = (6, 9)          # 1년 미만: 개월 축하
-ANNI_DELAY  = 30              # 날씨 게시 후 대기(초)
+# ── 오늘의 포춘쿠키 ───────────────────────────────
+PICK_COUNT   = 3                       # 매일 뽑는 인원
+PICK_LOG     = "data/pick_log.csv"     # 최근 선정 이력(골고루 순환용)
+FORTUNE_HUMOR_RATE = 0.25              # 유머형 비율(나머지는 운세형)
  
-ANNI_CLOSERS = [
-    "축하의 마음은 👍 반응으로 남겨주세요~ 😊",
-    "축하 반응 꾹 눌러주세요~ 🔥",
-    "오늘의 주인공! 👍 한 번씩 눌러주세요 🎈",
-    "응원의 반응 부탁드려요~ 👏",
+PICK_SHORT = {
+    "도농로": "도농", "구리리맥스": "구리", "자양번영로": "자양", "다산신도시": "다산",
+    "건대입구역": "건대", "면목역": "면목", "상봉역": "상봉", "외대역": "외대",
+    "금호동": "금호", "진접": "진접", "중계아울렛": "중계", "수유": "수유",
+    "의정부로데오": "의정부", "옥정신도시": "옥정", "삼양로": "삼양", "먹골역": "먹골",
+    "지행역": "지행", "상계역": "상계", "양주덕계": "덕계", "동해천곡": "동해",
+    "석사": "석사", "강릉임당": "임당", "원주무실": "무실", "단구": "단구",
+    "강릉유천": "유천", "홍천중앙": "홍천", "후평": "후평", "온의": "온의",
+}
+ 
+FORTUNE_B = [   # 운세형
+    "오후에 좋은 소식이 들려옵니다", "오늘 첫 손님이 행운을 데려옵니다", "서두르지 않으면 술술 풀리는 날",
+    "오늘은 웃는 얼굴이 최고의 무기입니다", "기다리던 연락이 오는 날", "작은 친절이 큰 결과로 돌아옵니다",
+    "오늘은 운이 조용히 따라옵니다", "마음 편하게 시작하면 잘 풀립니다", "오후 3시 이후가 특히 좋습니다",
+    "오늘 만난 사람이 다시 찾아옵니다", "서두른 만큼 놓치기 쉬운 날, 천천히 가세요", "예상 밖의 손님이 방문합니다",
+    "오늘은 첫인상이 좋은 날입니다", "한 번 더 물어보면 답이 나옵니다", "기분 좋은 마무리가 기다립니다",
+    "오늘은 준비한 만큼 나오는 날", "조급함만 내려놓으면 완벽한 하루", "뜻밖의 도움을 받게 됩니다",
+    "오늘은 목소리가 밝은 날입니다", "포기하려던 순간에 기회가 옵니다", "오늘 하루 컨디션이 좋습니다",
+    "먼저 인사하면 좋은 일이 생깁니다", "오늘은 집중력이 살아나는 날", "오전보다 오후가 좋은 날입니다",
+    "미뤄둔 일을 오늘 하면 잘 됩니다", "오늘은 설명이 잘 통하는 날", "좋은 타이밍이 저절로 찾아옵니다",
+    "오늘은 여유가 무기가 됩니다", "한 통의 전화가 하루를 바꿉니다", "오늘은 흐름을 타는 날입니다",
+    "작은 성과가 쌓이는 하루", "오늘은 인복이 좋은 날입니다", "마감 전에 좋은 일이 생깁니다",
+    "오늘은 침착함이 빛을 발합니다", "되돌아온 손님이 반가운 날", "오늘은 대화가 술술 풀립니다",
+    "기분 좋은 우연이 찾아옵니다", "오늘은 눈에 띄는 하루가 됩니다", "한 걸음만 더 가면 되는 날",
+    "오늘은 마음먹은 대로 되는 날", "좋은 소식은 조용히 옵니다", "오늘은 주변에서 챙겨주는 날",
+    "차분하게 가면 반드시 됩니다", "오늘은 손님이 먼저 말을 겁니다", "기대하지 않은 곳에서 성과가 납니다",
+    "오늘은 정리가 잘 되는 날", "한 번 더 확인하면 좋은 날", "오늘은 신뢰를 얻는 하루입니다",
+    "오늘 하루 흐름이 부드럽습니다", "막판 뒤집기가 가능한 날", "오늘은 표정이 좋은 날입니다",
+    "천천히 해도 늦지 않은 날", "오늘은 상담이 잘 풀립니다", "반가운 얼굴을 만나게 됩니다",
+    "오늘은 마무리가 깔끔한 날", "기회는 오전에 옵니다", "오늘은 설득력이 좋은 날입니다",
+    "고민하던 일이 해결됩니다", "오늘은 운이 뒤에서 밀어줍니다", "작은 배려가 오래 기억됩니다",
+    "오늘은 컨디션 관리가 중요한 날", "좋은 리듬을 타는 하루", "오늘은 답이 빨리 나옵니다",
+    "오늘 하루가 생각보다 짧게 느껴집니다", "기다림이 보상받는 날", "오늘은 손이 바쁜 날입니다",
+    "차 한 잔의 여유가 필요한 날", "오늘은 응원받는 하루입니다", "막힌 곳이 뚫리는 날",
+    "오늘은 눈치가 빛나는 날", "좋은 인연이 스쳐갑니다", "오늘은 흐트러짐 없는 하루",
+    "오늘은 실수가 적은 날입니다", "기분 좋은 소식이 기다립니다", "오늘은 배우는 게 많은 날",
+    "주변을 살피면 답이 보입니다", "오늘은 목표에 가까워지는 날", "한마디가 결정적인 날입니다",
+    "오늘은 편안하게 흘러갑니다", "좋은 결과가 늦게 옵니다, 기다리세요", "오늘은 자신감이 붙는 날",
+    "오늘은 도와주는 사람이 나타납니다", "시작이 좋으면 끝까지 좋은 날", "오늘은 말보다 행동이 통합니다",
+    "오늘 하루 운이 고르게 좋습니다", "조용히 성과가 쌓이는 날", "오늘은 인사가 통하는 날입니다",
+    "오늘은 기다려온 일이 시작됩니다", "마음이 가벼운 하루", "오늘은 정성이 통하는 날",
+    "오늘은 뜻이 잘 전달됩니다", "좋은 흐름을 놓치지 마세요", "오늘은 판단이 정확한 날",
+    "오늘은 잊고 있던 게 떠오릅니다", "작은 준비가 큰 차이를 만듭니다", "오늘은 순조로운 하루입니다",
+    "오늘은 기분 전환이 필요한 날", "좋은 마무리로 이어집니다", "오늘은 노력이 보이는 날",
+    "오늘은 응답이 빠른 날입니다", "기분 좋은 하루가 예상됩니다",
+]
+FORTUNE_C = [   # 유머형
+    "오늘 커피는 얻어 마실 운입니다 ☕", "점심 메뉴 고르는 데 30분 쓸 예정 🍚", "오늘 왠지 칭찬받습니다. 이유는 모릅니다 🤔",
+    "오늘 만보기가 놀랄 예정입니다 🚶", "오늘 웃을 일이 최소 3번 있습니다 😄", "오늘 누군가 간식을 사옵니다 🍪",
+    "오늘 사진이 유난히 잘 나옵니다 📸", "오늘 노래 한 곡이 하루 종일 맴돕니다 🎵", "오늘 퇴근길이 유난히 가볍습니다 🌙",
+    "오늘 배터리 잔량과 사투를 벌입니다 🔋", "오늘 택배가 예상보다 빨리 옵니다 📦", "오늘 날씨 얘기로 대화가 시작됩니다 🌤",
+    "오늘 점심이 유난히 맛있습니다 🍽", "오늘 계단 대신 엘리베이터를 기다립니다 🛗", "오늘 지갑이 조금 가벼워집니다 💸",
+    "오늘 우산을 챙길지 고민하게 됩니다 ☂️", "오늘 알람보다 먼저 눈이 떠집니다 ⏰", "오늘 누군가 이름을 두 번 부릅니다 📢",
+    "오늘 물을 평소보다 많이 마십니다 💧", "오늘 의자가 유난히 편안합니다 🪑", "오늘 문자 답장이 빠릅니다 💬",
+    "오늘 시계를 자주 확인하게 됩니다 ⌚", "오늘 주머니에서 잊고 있던 게 나옵니다 🎁", "오늘 하품이 전염됩니다 🥱",
+    "오늘 신발끈이 한 번쯤 풀립니다 👟", "오늘 음악 추천이 정확합니다 🎧", "오늘 간식 유혹을 이기기 어렵습니다 🍫",
+    "오늘 스마트폰을 두 번 찾습니다 📱", "오늘 웃음 포인트가 낮아집니다 😆", "오늘 커피 향이 유난히 좋습니다 ☕",
+    "오늘 정리 욕구가 솟아납니다 🧹", "오늘 누군가와 취향이 맞습니다 🤝", "오늘 사소한 일에 기분이 좋아집니다 ✨",
+    "오늘 시간이 빨리 갑니다 ⏳", "오늘 통화가 유난히 잘 들립니다 📞", "오늘 볼펜이 잘 나옵니다 🖊",
+    "오늘 자리 정리가 하고 싶어집니다 🗂", "오늘 창밖을 한 번쯤 봅니다 🪟", "오늘 저녁 메뉴가 이미 정해졌습니다 🍜",
+    "오늘 잔소리 대신 응원을 듣습니다 📣", "오늘 목이 마릅니다. 물 드세요 🚰", "오늘 스트레칭이 필요합니다 🧘",
+    "오늘 인사를 두 번 받습니다 🙌", "오늘 기분 좋은 알림이 옵니다 🔔", "오늘 지나가다 아는 얼굴을 봅니다 👀",
+    "오늘 손이 빨라집니다 ⚡", "오늘 무심코 한 말이 통합니다 💡", "오늘 뒷정리가 깔끔합니다 🧼",
+    "오늘 하루가 짧게 느껴집니다 🌀", "오늘 퇴근시간이 정확합니다 🎯",
 ]
  
  
-def load_anniversaries(today):
-    """오늘 입사 기념일인 직원 [(매장, 이름, 개월수, 라벨)]."""
+def _pick_people(n):
+    """1명은 전원 완전 랜덤, 나머지는 미선정자 우선(점장 포함)."""
     import csv
-    out = []
     try:
-        with open("data/roster.csv", newline="", encoding="utf-8-sig") as f:
-            rows = list(csv.reader(f))
-    except Exception as e:
-        print(f"[기념일] 명단 로드 실패({e!r}) - 생략")
-        return out
-    for r in rows[1:]:
-        if len(r) < 4 or not r[3].strip():
-            continue
-        try:
-            hd = datetime.strptime(r[3].strip(), "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if hd >= today or hd.day != today.day:
-            continue
-        months = (today.year - hd.year) * 12 + today.month - hd.month
-        if months < 12:
-            if months in MONTH_MARKS:
-                out.append((r[0].strip(), r[1].strip(), months, f"{months}개월"))
-        elif months % 12 == 0:
-            out.append((r[0].strip(), r[1].strip(), months, f"{months // 12}주년"))
-    out.sort(key=lambda x: -x[2])       # 오래된 순
-    return out
+        with open("data/roster.csv", newline="", encoding="utf-8-sig") as fp:
+            rows = list(csv.reader(fp))
+        people = [(r[0].strip(), r[1].strip()) for r in rows[1:]
+                  if len(r) >= 2 and r[0].strip()]
+    except Exception as exc:
+        print("[포춘] 명단 로드 실패(%r) - 생략" % (exc,))
+        return [], []
+    if not people:
+        return [], []
+ 
+    history = []
+    try:
+        with open(PICK_LOG, newline="", encoding="utf-8-sig") as fp:
+            history = [r for r in list(csv.reader(fp))[1:] if len(r) >= 3]
+    except FileNotFoundError:
+        pass
+ 
+    last_idx = {}
+    for i, r in enumerate(history):
+        last_idx[r[1] + " " + r[2]] = i          # 뒤에 있을수록 최근
+ 
+    picked = [random.choice(people)]             # ① 완전 랜덤 1명
+ 
+    # ② 나머지: 미선정자 → 오래전 선정자 순
+    unseen = [p for p in people if (p[0] + " " + p[1]) not in last_idx]
+    random.shuffle(unseen)
+    seen = sorted([p for p in people if (p[0] + " " + p[1]) in last_idx],
+                  key=lambda p: last_idx[p[0] + " " + p[1]])
+    pool = [p for p in (unseen + seen) if p not in picked]
+    cand = pool[:max((n - 1) * 6, 20)]
+    picked += random.sample(cand, min(n - 1, len(cand)))
+ 
+    # 같은 매장 중복은 가능하면 피함
+    if len(set(p[0] for p in picked)) < len(picked):
+        for alt in pool[:60]:
+            if len(set(p[0] for p in picked)) == len(picked):
+                break
+            if alt in picked:
+                continue
+            for i in range(1, len(picked)):      # 랜덤 1명(0번)은 그대로 둠
+                others = [q[0] for j, q in enumerate(picked) if j != i]
+                if picked[i][0] in others and alt[0] not in others:
+                    picked[i] = alt
+                    break
+    return picked, history
  
  
-def build_anniversary_text(annis):
-    """기념일 축하 메시지. 대상 없으면 빈 문자열."""
-    if not annis:
+def _save_pick_log(picked, history, today_str):
+    """선정 이력 기록(최근 400줄 유지)."""
+    import csv, os
+    try:
+        os.makedirs(os.path.dirname(PICK_LOG), exist_ok=True)
+        rows = [r for r in history if r[0] != today_str]
+        rows += [[today_str, s, n] for s, n in picked]
+        rows = rows[-400:]
+        with open(PICK_LOG, "w", newline="", encoding="utf-8-sig") as fp:
+            w = csv.writer(fp)
+            w.writerow(["날짜", "매장", "이름"])
+            w.writerows(rows)
+    except Exception as exc:
+        print("[포춘] 이력 저장 실패: %r" % (exc,))
+ 
+ 
+def build_pick_text(today_str):
+    """오늘의 포춘쿠키 메시지. 대상 없으면 빈 문자열."""
+    picked, history = _pick_people(PICK_COUNT)
+    if not picked:
         return ""
-    has_year = any(m >= 12 for _, _, m, _ in annis)
-    icon = "🎊" if has_year else "🌱"
-    L = [f"{icon} 오늘의 입사 기념일 {icon}", ""]
-    for store, name, months, label in annis:
-        tail = " 🎉" if months >= 12 else " 🌱"
-        L.append(f"{store} {name} 님 — 입사 {label}{tail}")
-    L.append("")
- 
-    top = annis[0][2] // 12
-    if top >= 10:
-        L.append(f"{top}년! 이거 진짜 아무나 못 하는 겁니다 👏")
-    elif top >= 5:
-        L.append(f"벌써 {top}년이라니, 시간 참 빠르네요! 👏")
-    elif has_year:
-        L.append("오늘의 주인공은 이분들! 👏")
-    else:
-        L.append("잘 적응하고 계신 것 같아 든든합니다 😊")
-    L.append(random.choice(ANNI_CLOSERS))
-    return "\n".join(L)
+    lines = ["🥠 오늘의 포춘쿠키", ""]
+    used = set()
+    for store, name in picked:
+        pool = FORTUNE_C if random.random() < FORTUNE_HUMOR_RATE else FORTUNE_B
+        msg = random.choice(pool)
+        for _ in range(5):
+            if msg not in used:
+                break
+            msg = random.choice(pool)
+        used.add(msg)
+        lines.append("· %s %s 님 — %s" % (PICK_SHORT.get(store, store), name, msg))
+    _save_pick_log(picked, history, today_str)
+    return "\n".join(lines)
  
  
 def main():
@@ -585,23 +678,17 @@ def main():
     )
     print("날씨 게시 완료")
  
-    # ── 입사 기념일: 별도 메시지로 30초 뒤 게시 ──
+    # ── 오늘의 포춘쿠키: 날씨 메시지에 이어서 게시 ──
     try:
-        annis = load_anniversaries(datetime.now(KST).date())
-        print(f"[기념일] 대상 {len(annis)}명"
-              + ("" if not annis else ": "
-                 + ", ".join(f"{s} {n}({l})" for s, n, _, l in annis)))
-        if annis:
-            time.sleep(ANNI_DELAY)
-            r = requests.post(
-                f"{TG}/sendMessage",
-                json={"chat_id": TARGET_CHAT_ID,
-                      "text": build_anniversary_text(annis)},
-                timeout=30,
-            )
-            print(f"[기념일] 게시 ok={r.json().get('ok', False)}")
+        pick = build_pick_text(datetime.now(KST).strftime("%Y-%m-%d"))
+        if pick:
+            time.sleep(5)
+            r = requests.post(f"{TG}/sendMessage",
+                              json={"chat_id": TARGET_CHAT_ID, "text": pick},
+                              timeout=30)
+            print(f"[포춘] 게시 ok={r.json().get('ok', False)}")
     except Exception as e:
-        print(f"[기념일] 처리 실패: {e!r}")
+        print(f"[포춘] 처리 실패: {e!r}")
  
  
 if __name__ == "__main__":
