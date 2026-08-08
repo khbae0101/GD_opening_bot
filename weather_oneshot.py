@@ -491,6 +491,72 @@ def build_news_html():
     return "━━━━━━━━\n" + header + "\n\n" + "\n\n".join(blocks)
  
  
+# ── 입사 기념일 (명단 기반) ───────────────────────
+MONTH_MARKS = (6, 9)          # 1년 미만: 개월 축하
+ANNI_DELAY  = 30              # 날씨 게시 후 대기(초)
+ 
+ANNI_CLOSERS = [
+    "축하의 마음은 👍 반응으로 남겨주세요~ 😊",
+    "축하 반응 꾹 눌러주세요~ 🔥",
+    "오늘의 주인공! 👍 한 번씩 눌러주세요 🎈",
+    "응원의 반응 부탁드려요~ 👏",
+]
+ 
+ 
+def load_anniversaries(today):
+    """오늘 입사 기념일인 직원 [(매장, 이름, 개월수, 라벨)]."""
+    import csv
+    out = []
+    try:
+        with open("data/roster.csv", newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+    except Exception as e:
+        print(f"[기념일] 명단 로드 실패({e!r}) - 생략")
+        return out
+    for r in rows[1:]:
+        if len(r) < 4 or not r[3].strip():
+            continue
+        try:
+            hd = datetime.strptime(r[3].strip(), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if hd >= today or hd.day != today.day:
+            continue
+        months = (today.year - hd.year) * 12 + today.month - hd.month
+        if months < 12:
+            if months in MONTH_MARKS:
+                out.append((r[0].strip(), r[1].strip(), months, f"{months}개월"))
+        elif months % 12 == 0:
+            out.append((r[0].strip(), r[1].strip(), months, f"{months // 12}주년"))
+    out.sort(key=lambda x: -x[2])       # 오래된 순
+    return out
+ 
+ 
+def build_anniversary_text(annis):
+    """기념일 축하 메시지. 대상 없으면 빈 문자열."""
+    if not annis:
+        return ""
+    has_year = any(m >= 12 for _, _, m, _ in annis)
+    icon = "🎊" if has_year else "🌱"
+    L = [f"{icon} 오늘의 입사 기념일 {icon}", ""]
+    for store, name, months, label in annis:
+        tail = " 🎉" if months >= 12 else " 🌱"
+        L.append(f"{store} {name} 님 — 입사 {label}{tail}")
+    L.append("")
+ 
+    top = annis[0][2] // 12
+    if top >= 10:
+        L.append(f"{top}년! 이거 진짜 아무나 못 하는 겁니다 👏")
+    elif top >= 5:
+        L.append(f"벌써 {top}년이라니, 시간 참 빠르네요! 👏")
+    elif has_year:
+        L.append("오늘의 주인공은 이분들! 👏")
+    else:
+        L.append("잘 적응하고 계신 것 같아 든든합니다 😊")
+    L.append(random.choice(ANNI_CLOSERS))
+    return "\n".join(L)
+ 
+ 
 def main():
     weekday = datetime.now(KST).weekday()
     if weekday == 6:
@@ -518,6 +584,24 @@ def main():
         timeout=30,
     )
     print("날씨 게시 완료")
+ 
+    # ── 입사 기념일: 별도 메시지로 30초 뒤 게시 ──
+    try:
+        annis = load_anniversaries(datetime.now(KST).date())
+        print(f"[기념일] 대상 {len(annis)}명"
+              + ("" if not annis else ": "
+                 + ", ".join(f"{s} {n}({l})" for s, n, _, l in annis)))
+        if annis:
+            time.sleep(ANNI_DELAY)
+            r = requests.post(
+                f"{TG}/sendMessage",
+                json={"chat_id": TARGET_CHAT_ID,
+                      "text": build_anniversary_text(annis)},
+                timeout=30,
+            )
+            print(f"[기념일] 게시 ok={r.json().get('ok', False)}")
+    except Exception as e:
+        print(f"[기념일] 처리 실패: {e!r}")
  
  
 if __name__ == "__main__":
