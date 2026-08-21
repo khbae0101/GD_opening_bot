@@ -14,6 +14,7 @@
  
 import os
 import re
+import traceback
 import time
 import random
 import html as _html
@@ -120,12 +121,33 @@ def pick_cheer(cond="", pop=0, rain=0, snow=0, tmax=0, tmin=99, pm=""):
  
  
 def fetch_json(url, params, tries=3, timeout=25):
+    """JSON 호출. 실패 시 응답 원문 일부를 로그로 남긴다(원인 파악용)."""
     last = None
     for i in range(tries):
         try:
-            return requests.get(url, params=params, timeout=timeout).json()
+            r = requests.get(url, params=params, timeout=timeout)
+            try:
+                return r.json()
+            except ValueError:
+                # JSON이 아닌 응답(기상청은 키·사용량 오류 시 XML을 준다)
+                txt = (r.text or "")[:400]
+                print(f"[기상청] JSON 아님 · status={r.status_code} · 응답={txt!r}")
+                for kw, msg in (
+                    ("LIMITED_NUMBER_OF_SERVICE_REQUESTS", "일일 사용량 초과"),
+                    ("SERVICE_KEY_IS_NOT_REGISTERED", "서비스키 미등록/오류"),
+                    ("SERVICE_ACCESS_DENIED", "해당 API 활용신청 필요"),
+                    ("DEADLINE_HAS_EXPIRED", "활용기간 만료"),
+                    ("UNREGISTERED_IP", "미등록 IP"),
+                ):
+                    if kw in txt:
+                        print(f"[기상청] ★ 원인: {msg} ★ 공공데이터포털에서 확인하세요")
+                        raise RuntimeError(msg)
+                raise RuntimeError("기상청 응답 형식 오류")
+        except RuntimeError:
+            raise                      # 키·사용량 문제는 재시도해도 소용없음
         except Exception as e:
             last = e
+            print(f"[기상청] 호출 실패({i + 1}/{tries}): {e!r}")
             time.sleep(2 * (i + 1))
     raise last
  
@@ -134,8 +156,13 @@ def fetch_json(url, params, tries=3, timeout=25):
 def kma_items(url, params):
     base = {"serviceKey": KMA_KEY, "dataType": "JSON", "numOfRows": 1000, "pageNo": 1}
     d = fetch_json(url, {**base, **params})
-    body = d["response"]["body"]
-    return body["items"]["item"]
+    header = d.get("response", {}).get("header", {})
+    code = header.get("resultCode")
+    if code not in (None, "00"):
+        print(f"[기상청] 오류 응답 · resultCode={code}"
+              f" · resultMsg={header.get('resultMsg')!r}")
+        raise RuntimeError(f"기상청 오류 {code}")
+    return d["response"]["body"]["items"]["item"]
  
  
 def base_fullday(now):
@@ -615,10 +642,12 @@ def _pick_people(n):
  
  
 def _save_pick_log(picked, history, today_str):
-    """선정 이력 기록(최근 400줄 유지)."""
+    """선정 이력 기록(최근 400줄 유지). 실패해도 메시지는 정상 게시."""
     import csv, os
     try:
-        os.makedirs(os.path.dirname(PICK_LOG), exist_ok=True)
+        d = os.path.dirname(PICK_LOG)
+        if d:
+            os.makedirs(d, exist_ok=True)
         rows = [r for r in history if r[0] != today_str]
         rows += [[today_str, s, n] for s, n in picked]
         rows = rows[-400:]
@@ -650,6 +679,25 @@ def build_pick_text(today_str):
     return "\n".join(lines)
  
  
+def tg_send(payload, label, retries=3):
+    """텔레그램 전송(타임아웃·일시 오류 시 재시도). 성공 여부 반환."""
+    for i in range(1, retries + 1):
+        try:
+            r = requests.post(f"{TG}/sendMessage", json=payload, timeout=(10, 60))
+            j = r.json()
+            if j.get("ok"):
+                print(f"[{label}] 게시 완료" + (f" (재시도 {i}회차)" if i > 1 else ""))
+                return True
+            print(f"[{label}] 텔레그램 거부: {j}")
+            return False
+        except requests.exceptions.RequestException as exc:
+            print(f"[{label}] 전송 실패({i}/{retries}): {exc!r}")
+            if i < retries:
+                time.sleep(5 * i)
+    print(f"[{label}] 전송 최종 실패 - 이미 발송됐을 수 있으니 방을 확인하세요")
+    return False
+ 
+ 
 def main():
     weekday = datetime.now(KST).weekday()
     if weekday == 6:
@@ -669,28 +717,30 @@ def main():
     if news:
         body = body + "\n\n" + news    # 뉴스는 이미 HTML이라 그대로 붙임
  
-    requests.post(
-        f"{TG}/sendMessage",
-        json={"chat_id": TARGET_CHAT_ID, "text": body,
-              "parse_mode": "HTML",
-              "link_preview_options": {"is_disabled": True}},
-        timeout=30,
-    )
-    print("날씨 게시 완료")
+    tg_send({"chat_id": TARGET_CHAT_ID, "text": body,
+             "parse_mode": "HTML",
+             "link_preview_options": {"is_disabled": True}}, "날씨")
  
     # ── 오늘의 포춘쿠키: 날씨 메시지에 이어서 게시 ──
     try:
+        print("[포춘] 생성 시작")
         pick = build_pick_text(datetime.now(KST).strftime("%Y-%m-%d"))
+        print(f"[포춘] 생성 결과 길이={len(pick)}")
         if pick:
             time.sleep(5)
-            r = requests.post(f"{TG}/sendMessage",
-                              json={"chat_id": TARGET_CHAT_ID, "text": pick},
-                              timeout=30)
-            print(f"[포춘] 게시 ok={r.json().get('ok', False)}")
-    except Exception as e:
-        print(f"[포춘] 처리 실패: {e!r}")
+            tg_send({"chat_id": TARGET_CHAT_ID, "text": pick}, "포춘")
+        else:
+            print("[포춘] 내용이 비어 게시하지 않음 (명단 확인 필요)")
+    except Exception:
+        print("[포춘] 처리 실패 - 상세:")
+        traceback.print_exc()
  
  
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # 어떤 오류가 나도 워크플로 자체는 실패시키지 않고 원인만 남긴다
+        print("[치명적 오류] main() 예외 - 상세:")
+        traceback.print_exc()
  
