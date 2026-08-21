@@ -58,6 +58,38 @@ def load_managers():
     return mgr
  
  
+MONTH_MARKS = (3, 6, 9)                 # 1년 미만: 개월 축하
+YEAR_MARKS  = (1, 3, 5, 10, 15, 20)     # 1년 이상: 주년 축하
+ 
+ 
+def anniversaries(today):
+    """오늘 입사 기념일인 직원 [(매장, 이름, '3개월'|'1주년')]."""
+    import csv
+    out = []
+    try:
+        with open("data/roster.csv", newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+    except Exception as e:
+        print(f"[출근] 명단 로드 실패({e!r}) - 기념일 생략")
+        return out
+    for r in rows[1:]:
+        if len(r) < 4 or not r[3].strip():
+            continue
+        try:
+            hd = datetime.strptime(r[3].strip(), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if hd >= today or hd.day != today.day:
+            continue
+        months = ((today.year - hd.year) * 12 + today.month - hd.month)
+        if months < 12:
+            if months in MONTH_MARKS:
+                out.append((r[0].strip(), r[1].strip(), f"{months}개월"))
+        elif months % 12 == 0 and months // 12 in YEAR_MARKS:
+            out.append((r[0].strip(), r[1].strip(), f"{months // 12}주년"))
+    return out
+ 
+ 
 def fetch_messages():
     collected = []
     offset = None
@@ -151,9 +183,10 @@ def _font(bold, size):
     return ImageFont.load_default()
  
  
-def render_image(data, today_label, path="attend.png", managers=None):
+def render_image(data, today_label, path="attend.png", managers=None, annis=None):
     from PIL import Image, ImageDraw
     managers = managers or {}
+    annis = annis or []
  
     # data: {store: {"work": [...], "off": [...], "note": ""}}
     W, M = 1080, 28
@@ -222,6 +255,8 @@ def render_image(data, today_label, path="attend.png", managers=None):
             info = data.get(s, {})
             H += row_h(" ".join(info.get("work", [])), ", ".join(info.get("off", [])))
     H += 40 + 46 + max(len(notes), 1) * 36 + 160   # 특이사항 줄바꿈 여유
+    if annis:
+        H += 46 + len(annis) * 36 + 20   # 입사 기념일 블록
  
     img = Image.new("RGB", (W, H), (255, 255, 255))
     d = ImageDraw.Draw(img)
@@ -304,7 +339,8 @@ def render_image(data, today_label, path="attend.png", managers=None):
     d.line([W - M, top_table, W - M, y], fill=NAVY, width=1)
  
     y += 26
-    d.text((M, y), "📌 특이사항", font=f_noteh, fill=NAVY)
+    d.rounded_rectangle([M, y + 4, M + 7, y + 32], radius=3, fill=TEAL)
+    d.text((M + 20, y), "특이사항", font=f_noteh, fill=NAVY)
     y += 46
     if notes:
         for store, note in notes:
@@ -315,6 +351,16 @@ def render_image(data, today_label, path="attend.png", managers=None):
     else:
         d.text((M + 10, y), "· 없음", font=f_note, fill=GRAY)
         y += 36
+ 
+    if annis:
+        y += 24
+        d.rounded_rectangle([M, y + 4, M + 7, y + 32], radius=3, fill=TEAL)
+        d.text((M + 20, y), "오늘의 입사 기념일", font=f_noteh, fill=NAVY)
+        y += 46
+        for store, name, label in annis:
+            txt = f"· {STORE_SHORT.get(store, store)} {name} 님 — 입사 {label}"
+            d.text((M + 10, y), txt, font=f_note, fill=TEAL)
+            y += 36
  
     d.text((M, y + 8), "강동요정봇 자동 생성", font=f_foot, fill=(185, 192, 200))
     img.save(path)
@@ -338,20 +384,47 @@ def build_fallback_text(data, today_label):
     return "\n".join(lines)
  
  
+def _report(kind, resp):
+    """전송 결과 로그. 실패 시 텔레그램이 알려준 사유를 그대로 남긴다."""
+    try:
+        j = resp.json()
+    except Exception:
+        print(f"[출근] {kind} 응답 해석 실패 · status={resp.status_code}"
+              f" · 본문={resp.text[:300]!r}")
+        return False
+    if j.get("ok"):
+        print(f"[출근] {kind} ok=True")
+        return True
+    print(f"[출근] {kind} ok=False · error_code={j.get('error_code')}"
+          f" · description={j.get('description')!r}")
+    print(f"[출근] 사용 중인 chat_id={TARGET_CHAT_ID}")
+    return False
+ 
+ 
 def send_photo(path, caption):
-    with open(path, "rb") as f:
-        r = requests.post(f"{API}/sendPhoto",
-                          data={"chat_id": TARGET_CHAT_ID, "caption": caption},
-                          files={"photo": f}, timeout=60)
-    ok = r.json().get("ok", False)
-    print(f"[출근] sendPhoto ok={ok}")
-    return ok
+    import os as _os
+    size = _os.path.getsize(path) if _os.path.exists(path) else -1
+    print(f"[출근] 이미지 크기 {size:,} bytes")
+    try:
+        with open(path, "rb") as f:
+            r = requests.post(f"{API}/sendPhoto",
+                              data={"chat_id": TARGET_CHAT_ID, "caption": caption},
+                              files={"photo": f}, timeout=(10, 120))
+    except Exception as exc:
+        print(f"[출근] sendPhoto 전송 예외: {exc!r}")
+        return False
+    return _report("sendPhoto", r)
  
  
 def send_text(text):
-    r = requests.post(f"{API}/sendMessage",
-                      json={"chat_id": TARGET_CHAT_ID, "text": text}, timeout=30)
-    print(f"[출근] sendMessage ok={r.json().get('ok', False)}")
+    try:
+        r = requests.post(f"{API}/sendMessage",
+                          json={"chat_id": TARGET_CHAT_ID, "text": text},
+                          timeout=(10, 60))
+    except Exception as exc:
+        print(f"[출근] sendMessage 전송 예외: {exc!r}")
+        return False
+    return _report("sendMessage", r)
  
  
 def main():
@@ -382,8 +455,13 @@ def main():
     managers = load_managers()
     print(f"[출근] 점장 명단 {len(managers)}개 매장")
  
+    annis = anniversaries(now.date())
+    if annis:
+        print(f"[출근] 입사 기념일 {len(annis)}명: "
+              + ", ".join(f"{s} {n}({l})" for s, n, l in annis))
+ 
     try:
-        path, summary = render_image(data, today_label, managers=managers)
+        path, summary = render_image(data, today_label, managers=managers, annis=annis)
         if send_photo(path, f"📋 출근 현황 · {summary}"):
             print("출근 현황 이미지 게시 완료")
             return
