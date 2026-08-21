@@ -703,7 +703,26 @@ def main():
     if weekday == 6:
         print("일요일은 게시하지 않습니다.")
         return
-    text = build_weekly() if weekday == 0 else build_today()
+ 
+    FAIL_MARK = "날씨 정보를 일시적으로 불러오지 못했어요"
+ 
+    def make():
+        return build_weekly() if weekday == 0 else build_today()
+ 
+    text = make()
+    n_fail = text.count(FAIL_MARK)
+    # 전 지역 실패면 기상청 일시 장애일 가능성 → 60초 뒤 한 번 더 시도
+    if n_fail >= 5:
+        print(f"[날씨] 전 지역 조회 실패({n_fail}건) · 60초 후 재시도")
+        time.sleep(60)
+        text = make()
+        n_fail = text.count(FAIL_MARK)
+        print(f"[날씨] 재시도 결과 실패 {n_fail}건")
+ 
+    if n_fail >= 5:
+        # 그래도 전부 실패하면 날씨는 빼고 뉴스만 게시(깨진 표 방지)
+        print("[날씨] 재시도 후에도 전 지역 실패 - 날씨 생략하고 뉴스만 게시합니다")
+        text = None
  
     # 뉴스 (실패해도 날씨는 정상 게시)
     try:
@@ -713,9 +732,20 @@ def main():
         news = ""
     print(f"[뉴스] 최종 뉴스블록 길이: {len(news)}")
  
-    body = _html.escape(text)          # 날씨 본문(특수문자 안전 처리)
-    if news:
-        body = body + "\n\n" + news    # 뉴스는 이미 HTML이라 그대로 붙임
+    if text is None:
+        if not news:
+            print("[날씨] 게시할 내용이 없어 종료합니다")
+            return
+        now_ = datetime.now(KST)
+        wk = "월화수목금토일"[now_.weekday()]
+        body = _html.escape(
+            f"🌤 {now_.month}/{now_.day}({wk}) 매장 날씨\n\n"
+            "기상청 시스템 점검 등으로 날씨 정보를 가져오지 못했습니다.\n"
+            "잠시 후 다시 안내드리겠습니다.") + "\n\n" + news
+    else:
+        body = _html.escape(text)      # 날씨 본문(특수문자 안전 처리)
+        if news:
+            body = body + "\n\n" + news   # 뉴스는 이미 HTML이라 그대로 붙임
  
     tg_send({"chat_id": TARGET_CHAT_ID, "text": body,
              "parse_mode": "HTML",
