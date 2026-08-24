@@ -224,7 +224,7 @@ def count_sales(reports):
             "이번에는 어떤 설명도 쓰지 말고 JSON 객체 하나만 출력하라.\n\n" + prompt)
         try:
             resp = client.messages.create(
-                model=MODEL, max_tokens=8000, temperature=0,
+                model=MODEL, max_tokens=8000,
                 system=COUNT_SYSTEM,
                 messages=[{"role": "user", "content": content}],
             )
