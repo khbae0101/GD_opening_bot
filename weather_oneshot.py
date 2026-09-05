@@ -5,13 +5,13 @@
 - 미세먼지: Open-Meteo (기상청엔 없어서 그대로 사용, 키 불필요)
 - 월요일 : 지역별 주간(월~토)  /  화~토 : 지역별 오늘 날씨
 - 모든 날짜는 한국시간(KST) 기준. 네트워크 일시 오류 시 재시도.
- 
+
 비밀값(Secrets):
   TELEGRAM_TOKEN_3 : 날씨 봇 토큰
   TARGET_CHAT_ID_3 : 날씨를 올릴 방 ID
   KMA_SERVICE_KEY  : 기상청 서비스키 (공공데이터포털 '일반 인증키 Decoding')
 """
- 
+
 import os
 import re
 import traceback
@@ -23,15 +23,15 @@ from urllib.parse import quote
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
- 
+
 import requests
- 
+
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN_3"]
 TARGET_CHAT_ID = int(os.environ["TARGET_CHAT_ID_3"])
 KMA_KEY        = os.environ["KMA_SERVICE_KEY"]
 KST = ZoneInfo("Asia/Seoul")
 TG  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
- 
+
 # 지역: 기상청 격자(nx,ny) + 미세먼지용 위경도 + 중기예보 지역코드
 REGIONS = [
     {"name": "수도권 · 광진/구리", "nx": 62, "ny": 127, "lat": 37.596, "lon": 127.100,
@@ -45,7 +45,7 @@ REGIONS = [
     {"name": "강원 · 춘천",       "nx": 73, "ny": 134, "lat": 37.88,  "lon": 127.73,
      "mid_land": "11D10000", "mid_ta": "11D10301"},
 ]
- 
+
 RAIN_WARN = 60
 HEAT_WARN = 33
 COLD_WARN = -12
@@ -53,11 +53,11 @@ WIND_WARN = 14
 RAIN_HEAVY = 30
 SNOW_HEAVY = 5
 WDAY = "월화수목금토일"
- 
+
 SKY_EMOJI = {"1": "☀️ 맑음", "3": "⛅ 구름많음", "4": "☁️ 흐림"}
 PTY_EMOJI = {"1": "🌧️ 비", "2": "🌨️ 비/눈", "3": "❄️ 눈", "4": "🌦️ 소나기",
              "5": "🌧️ 빗방울", "6": "🌨️ 진눈깨비", "7": "🌨️ 눈날림"}
- 
+
 # ── 응원 멘트 (그날 날씨에 맞춰 랜덤) ─────────────────────
 CHEERS = {
     "clear": [
@@ -98,8 +98,8 @@ CHEERS = {
         "👏 좋은 기운으로 하루 열어요. 오늘도 모두 화이팅!",
     ],
 }
- 
- 
+
+
 def pick_cheer(cond="", pop=0, rain=0, snow=0, tmax=0, tmin=99, pm=""):
     if snow >= SNOW_HEAVY or "눈" in cond:
         key = "snow"
@@ -118,8 +118,8 @@ def pick_cheer(cond="", pop=0, rain=0, snow=0, tmax=0, tmin=99, pm=""):
     else:
         key = "default"
     return random.choice(CHEERS.get(key, CHEERS["default"]))
- 
- 
+
+
 def fetch_json(url, params, tries=3, timeout=25):
     """JSON 호출. 실패 시 응답 원문 일부를 로그로 남긴다(원인 파악용)."""
     last = None
@@ -150,8 +150,8 @@ def fetch_json(url, params, tries=3, timeout=25):
             print(f"[기상청] 호출 실패({i + 1}/{tries}): {e!r}")
             time.sleep(2 * (i + 1))
     raise last
- 
- 
+
+
 # ── 기상청 호출 ──────────────────────────────────────────
 def kma_items(url, params):
     base = {"serviceKey": KMA_KEY, "dataType": "JSON", "numOfRows": 1000, "pageNo": 1}
@@ -163,36 +163,36 @@ def kma_items(url, params):
               f" · resultMsg={header.get('resultMsg')!r}")
         raise RuntimeError(f"기상청 오류 {code}")
     return d["response"]["body"]["items"]["item"]
- 
- 
+
+
 def base_fullday(now):
     """오늘 일자료(최저·최고기온 포함)를 받기 위한 단기예보 발표시각."""
     if now.hour >= 3:
         return now.strftime("%Y%m%d"), "0200"
     y = now - timedelta(days=1)
     return y.strftime("%Y%m%d"), "2300"
- 
- 
+
+
 def fetch_vilage(rg, bdate, btime):
     return kma_items(
         "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
         {"base_date": bdate, "base_time": btime, "nx": rg["nx"], "ny": rg["ny"]},
     )
- 
- 
+
+
 def parse_amt(v):
     if not v or "없음" in v:
         return 0.0
     m = re.search(r"[\d.]+", v)
     return float(m.group()) if m else 0.0
- 
- 
+
+
 def cond_emoji(sky, pty):
     if pty and pty != "0":
         return PTY_EMOJI.get(pty, "🌧️ 비")
     return SKY_EMOJI.get(sky, "☁️ 흐림")
- 
- 
+
+
 def day_data(items, date_str):
     """해당 날짜의 요약: 오전/오후 날씨, 강수확률, 최저/최고, 강수·적설·풍속."""
     sky, pty, tmps = {}, {}, []
@@ -220,8 +220,8 @@ def day_data(items, date_str):
         "tmin": round(tmn) if tmn is not None else 0,
         "tmax": round(tmx) if tmx is not None else 0,
     }
- 
- 
+
+
 # ── 중기예보 (주간 뒷부분) ───────────────────────────────
 def mid_tmfc(now):
     if now.hour < 6:
@@ -229,16 +229,16 @@ def mid_tmfc(now):
     if now.hour < 18:
         return now.strftime("%Y%m%d") + "0600"
     return now.strftime("%Y%m%d") + "1800"
- 
- 
+
+
 def fetch_mid(rg, tmfc):
     ta = kma_items("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
                    {"regId": rg["mid_ta"], "tmFc": tmfc})[0]
     land = kma_items("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
                      {"regId": rg["mid_land"], "tmFc": tmfc})[0]
     return ta, land
- 
- 
+
+
 def mid_emoji(text):
     if not text: return "☁️ 흐림"
     if "눈" in text: return "❄️ 눈"
@@ -248,8 +248,8 @@ def mid_emoji(text):
     if "구름많" in text: return "⛅ 구름많음"
     if "맑음" in text: return "☀️ 맑음"
     return "☁️ " + text
- 
- 
+
+
 # ── 특보/내방영향 ────────────────────────────────────────
 def alerts_for(tmax, tmin, rain, snow, wind):
     out = []
@@ -259,8 +259,8 @@ def alerts_for(tmax, tmin, rain, snow, wind):
     if tmin <= COLD_WARN: out.append("한파 주의 수준")
     if wind >= WIND_WARN: out.append("강풍 주의 수준")
     return out
- 
- 
+
+
 def visit_impact(pop, rain, snow, tmax, tmin, pm):
     reasons = []
     if pop >= RAIN_WARN or rain >= RAIN_HEAVY: reasons.append("비")
@@ -269,16 +269,16 @@ def visit_impact(pop, rain, snow, tmax, tmin, pm):
     if tmin <= COLD_WARN: reasons.append("한파")
     if "나쁨" in pm: reasons.append("미세먼지")
     return f"주의 ({'·'.join(reasons)})" if reasons else "양호"
- 
- 
+
+
 # ── 미세먼지 (Open-Meteo) ────────────────────────────────
 def pm_grade(pm10, pm25):
     def g10(v): return 1 if v <= 30 else 2 if v <= 80 else 3 if v <= 150 else 4
     def g25(v): return 1 if v <= 15 else 2 if v <= 35 else 3 if v <= 75 else 4
     g = max(g10(pm10 or 0), g25(pm25 or 0))
     return {1: "🟢 좋음", 2: "🟡 보통", 3: "🟠 나쁨", 4: "🔴 매우나쁨"}[g]
- 
- 
+
+
 def fetch_airquality(lat, lon, day):
     try:
         aq = fetch_json(
@@ -292,15 +292,15 @@ def fetch_airquality(lat, lon, day):
         return pm_grade(sum(pm10) / max(1, len(pm10)), sum(pm25) / max(1, len(pm25)))
     except Exception:
         return "⚪ 정보없음"
- 
- 
+
+
 # ── 오늘 날씨 (화~토) ────────────────────────────────────
 def build_today():
     now = datetime.now(KST)
     today = now.strftime("%Y%m%d")
     bdate, btime = base_fullday(now)
     lines = [f"🌤 {now.month}/{now.day}({WDAY[now.weekday()]}) 매장 날씨", ""]
- 
+
     regions = []
     for rg in REGIONS:
         try:
@@ -311,7 +311,7 @@ def build_today():
             regions.append(d)
         except Exception:
             regions.append({"name": rg["name"], "ok": False})
- 
+
     al = []
     for r in regions:
         if not r.get("ok"):
@@ -320,7 +320,7 @@ def build_today():
             al.append(f"· {r['name'].split(' · ')[-1]} {a}")
     if al:
         lines += ["⚠️ 기상특보(자동판단)"] + al + [""]
- 
+
     for r in regions:
         lines.append(f"[{r['name']}]")
         if not r.get("ok"):
@@ -332,7 +332,7 @@ def build_today():
         lines.append(f"미세먼지 {r['pm']} · 내방영향: "
                      f"{visit_impact(r['pop'], r['rain'], r['snow'], r['tmax'], r['tmin'], r['pm'])}")
         lines.append("")
- 
+
     rep = next((r for r in regions if r.get("ok")), None)
     if rep:
         cheer = pick_cheer(rep["am"] + rep["aft"], rep["pop"], rep["rain"],
@@ -341,8 +341,8 @@ def build_today():
         cheer = random.choice(CHEERS["default"])
     lines += ["────────", cheer]
     return "\n".join(lines).strip()
- 
- 
+
+
 # ── 주간 날씨 (월요일) ───────────────────────────────────
 def build_weekly():
     now = datetime.now(KST)
@@ -350,7 +350,7 @@ def build_weekly():
     tmfc = mid_tmfc(now)
     sat = now + timedelta(days=5)
     lines = [f"📅 {now.month}/{now.day}~{sat.month}/{sat.day} 주간 날씨", ""]
- 
+
     rep0 = {}
     for rg in REGIONS:
         lines.append(f"[{rg['name']}]")
@@ -378,26 +378,26 @@ def build_weekly():
         except Exception:
             lines.append("날씨 정보를 일시적으로 불러오지 못했어요")
         lines.append("")
- 
+
     cheer = pick_cheer(rep0.get("am", "") + rep0.get("aft", ""), rep0.get("pop", 0),
                        rep0.get("rain", 0), rep0.get("snow", 0),
                        rep0.get("tmax", 0), rep0.get("tmin", 99))
     lines += ["────────", cheer]
     return "\n".join(lines).strip()
- 
- 
+
+
 # ── 업계 뉴스 (구글 뉴스 RSS 후보 → 앤트로픽 AI 선별) ────
 TELECOM_KEYWORDS = ["KT", "SKT", "LG유플러스", "통신사", "이동통신"]
 DEVICE_KEYWORDS  = ["삼성 갤럭시", "애플 아이폰", "갤럭시", "아이폰", "스마트폰"]
- 
- 
+
+
 def split_source(title):
     if " - " in title:
         t, src = title.rsplit(" - ", 1)
         return t.strip(), src.strip()
     return title, ""
- 
- 
+
+
 def _collect(keywords, seen, cap):
     """주어진 키워드들로 어제 기사 후보를 모은다(seen으로 전역 중복 제거)."""
     today = datetime.now(KST).date()
@@ -428,8 +428,8 @@ def _collect(keywords, seen, cap):
             cand.append({"title": title, "link": link})
     print(f"[뉴스] {keywords[0]}… 그룹 후보 {len(cand)}건")
     return cand[:cap]
- 
- 
+
+
 def collect_candidates():
     """통신사·제조사 후보를 따로 모아 합친다(각 그룹이 AI에 균형있게 전달되도록)."""
     seen = set()
@@ -438,8 +438,8 @@ def collect_candidates():
     cand = tele + dev
     print(f"[뉴스] 전체 후보 {len(cand)}건 (통신 {len(tele)} / 제조 {len(dev)})")
     return cand
- 
- 
+
+
 def pick_news_with_ai(cand):
     """AI가 통신사 2개·제조사 2개를 선별해 인덱스로 반환."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -449,19 +449,19 @@ def pick_news_with_ai(cand):
     import anthropic
     listing = "\n".join(f"{i}. {c['title']}" for i, c in enumerate(cand))
     prompt = f"""아래는 어제 올라온 뉴스 기사 제목 목록(번호 포함)이야.
- 
+
 # 분류 기준
 - '통신사': KT, SKT, LG유플러스 등 국내 이동통신사의 사업·요금제·정책·실적·서비스 관련 기사.
 - '제조사': 삼성 갤럭시, 애플 아이폰 등 스마트폰 단말기의 출시·가격·신제품·업데이트 관련 기사.
 - 야구(KT위즈 등), 증권/주가, 연예, 단순 광고/홍보, 통신·스마트폰과 무관한 기사는 제외.
- 
+
 # 할 일
 - 통신사 동향에 가장 적합한 기사 2개, 제조사 동향에 가장 적합한 기사 2개를 골라.
 - 가능한 최신·핵심 위주로. 적합한 게 부족하면 있는 만큼만.
- 
+
 # 출력 (JSON만, 설명 없이)
 {{"telecom": [번호, 번호], "device": [번호, 번호]}}
- 
+
 # 기사 목록
 {listing}
 """
@@ -482,8 +482,8 @@ def pick_news_with_ai(cand):
     except Exception as e:
         print(f"[뉴스] AI 선별 실패: {e!r}")
         return None
- 
- 
+
+
 def build_news_html():
     cand = collect_candidates()
     if not cand:
@@ -493,7 +493,7 @@ def build_news_html():
     if not picked:
         print("[뉴스] AI 선별 결과 없음 - 뉴스 블록 생략")
         return ""
- 
+
     def fmt(idx_list):
         out = []
         for i in idx_list or []:
@@ -503,7 +503,7 @@ def build_news_html():
                 srctxt = f" ({_html.escape(src)})" if src else ""
                 out.append(f'· <a href="{url}">{_html.escape(t)}</a>{srctxt}')
         return out
- 
+
     blocks = []
     tele = fmt(picked.get("telecom"))
     dev = fmt(picked.get("device"))
@@ -516,13 +516,13 @@ def build_news_html():
     yest = datetime.now(KST) - timedelta(days=1)
     header = f"📰 어제의 업계 동향 ({yest.month}/{yest.day} 기준)"
     return "━━━━━━━━\n" + header + "\n\n" + "\n\n".join(blocks)
- 
- 
+
+
 # ── 오늘의 포춘쿠키 ───────────────────────────────
 PICK_COUNT   = 3                       # 매일 뽑는 인원
 PICK_LOG     = "data/pick_log.csv"     # 최근 선정 이력(골고루 순환용)
 FORTUNE_HUMOR_RATE = 0.25              # 유머형 비율(나머지는 운세형)
- 
+
 PICK_SHORT = {
     "도농로": "도농", "구리리맥스": "구리", "자양번영로": "자양", "다산신도시": "다산",
     "건대입구역": "건대", "면목역": "면목", "상봉역": "상봉", "외대역": "외대",
@@ -532,7 +532,7 @@ PICK_SHORT = {
     "석사": "석사", "강릉임당": "임당", "원주무실": "무실", "단구": "단구",
     "강릉유천": "유천", "홍천중앙": "홍천", "후평": "후평", "온의": "온의",
 }
- 
+
 FORTUNE_B = [   # 운세형
     "오후에 좋은 소식이 들려옵니다", "오늘 첫 손님이 행운을 데려옵니다", "서두르지 않으면 술술 풀리는 날",
     "오늘은 웃는 얼굴이 최고의 무기입니다", "기다리던 연락이 오는 날", "작은 친절이 큰 결과로 돌아옵니다",
@@ -588,8 +588,8 @@ FORTUNE_C = [   # 유머형
     "오늘 손이 빨라집니다 ⚡", "오늘 무심코 한 말이 통합니다 💡", "오늘 뒷정리가 깔끔합니다 🧼",
     "오늘 하루가 짧게 느껴집니다 🌀", "오늘 퇴근시간이 정확합니다 🎯",
 ]
- 
- 
+
+
 def _pick_people(n):
     """1명은 전원 완전 랜덤, 나머지는 미선정자 우선(점장 포함)."""
     import csv
@@ -603,20 +603,20 @@ def _pick_people(n):
         return [], []
     if not people:
         return [], []
- 
+
     history = []
     try:
         with open(PICK_LOG, newline="", encoding="utf-8-sig") as fp:
             history = [r for r in list(csv.reader(fp))[1:] if len(r) >= 3]
     except FileNotFoundError:
         pass
- 
+
     last_idx = {}
     for i, r in enumerate(history):
         last_idx[r[1] + " " + r[2]] = i          # 뒤에 있을수록 최근
- 
+
     picked = [random.choice(people)]             # ① 완전 랜덤 1명
- 
+
     # ② 나머지: 미선정자 → 오래전 선정자 순
     unseen = [p for p in people if (p[0] + " " + p[1]) not in last_idx]
     random.shuffle(unseen)
@@ -625,7 +625,7 @@ def _pick_people(n):
     pool = [p for p in (unseen + seen) if p not in picked]
     cand = pool[:max((n - 1) * 6, 20)]
     picked += random.sample(cand, min(n - 1, len(cand)))
- 
+
     # 같은 매장 중복은 가능하면 피함
     if len(set(p[0] for p in picked)) < len(picked):
         for alt in pool[:60]:
@@ -639,8 +639,8 @@ def _pick_people(n):
                     picked[i] = alt
                     break
     return picked, history
- 
- 
+
+
 def _save_pick_log(picked, history, today_str):
     """선정 이력 기록(최근 400줄 유지). 실패해도 메시지는 정상 게시."""
     import csv, os
@@ -657,8 +657,8 @@ def _save_pick_log(picked, history, today_str):
             w.writerows(rows)
     except Exception as exc:
         print("[포춘] 이력 저장 실패: %r" % (exc,))
- 
- 
+
+
 def build_pick_text(today_str):
     """오늘의 포춘쿠키 메시지. 대상 없으면 빈 문자열."""
     picked, history = _pick_people(PICK_COUNT)
@@ -677,8 +677,8 @@ def build_pick_text(today_str):
         lines.append("· %s %s 님 — %s" % (PICK_SHORT.get(store, store), name, msg))
     _save_pick_log(picked, history, today_str)
     return "\n".join(lines)
- 
- 
+
+
 def tg_send(payload, label, retries=3):
     """텔레그램 전송(타임아웃·일시 오류 시 재시도). 성공 여부 반환."""
     for i in range(1, retries + 1):
@@ -696,19 +696,123 @@ def tg_send(payload, label, retries=3):
                 time.sleep(5 * i)
     print(f"[{label}] 전송 최종 실패 - 이미 발송됐을 수 있으니 방을 확인하세요")
     return False
- 
- 
+
+
+# ── 상권 대항전 (아침 알림) ───────────────────────
+BATTLE_ON    = True
+BATTLE_START = "2026-09-07"
+BATTLE_END   = "2026-09-12"
+BATTLE_PRIZES = [2000000, 1000000, 500000]   # 1~3위 시상금
+BATTLE_AREAS = {
+    "광구": ["도농로", "구리리맥스", "자양번영로", "다산신도시", "건대입구역",
+             "면목역", "상봉역", "외대역", "금호동", "진접"],
+    "경북": ["중계아울렛", "수유", "의정부로데오", "옥정신도시", "삼양로",
+             "먹골역", "지행역", "상계역", "양주덕계"],
+    "강원": ["동해천곡", "석사", "강릉임당", "원주무실", "단구",
+             "강릉유천", "홍천중앙", "후평", "온의"],
+}
+B_S2A = {s: a for a, ss in BATTLE_AREAS.items() for s in ss}
+
+
+def _battle_headcount():
+    """상권별 인원수 + 매장수."""
+    import csv
+    head, stores = {}, {}
+    try:
+        with open("data/roster.csv", newline="", encoding="utf-8-sig") as fp:
+            rows = list(csv.reader(fp))
+    except Exception:
+        return {}, {}
+    for r in rows[1:]:
+        if len(r) < 2:
+            continue
+        a = B_S2A.get(r[0].strip())
+        if a:
+            head[a] = head.get(a, 0) + 1
+            stores.setdefault(a, set()).add(r[0].strip())
+    return head, {a: len(v) for a, v in stores.items()}
+
+
+def build_battle_text(today_str):
+    """대항전 시작 알림(첫날) 또는 중간 현황(이후). 기간 밖이면 빈 문자열."""
+    import csv
+    if not (BATTLE_ON and BATTLE_START <= today_str <= BATTLE_END):
+        return ""
+    head, nstore = _battle_headcount()
+    if not head:
+        print("[대항전] 명단을 읽지 못해 생략")
+        return ""
+
+    if today_str == BATTLE_START:                     # 시작 알림
+        _d1 = datetime.strptime(BATTLE_START, "%Y-%m-%d")
+        _d2 = datetime.strptime(BATTLE_END, "%Y-%m-%d")
+        L = [f"🏁 상권 대항전 시작! "
+             f"({_d1.month}/{_d1.day}~{_d2.month}/{_d2.day})", ""]
+        L.append("이번 주는 상권끼리 겨룹니다!")
+        for a in BATTLE_AREAS:
+            L.append(f"  · {a} — {nstore.get(a, 0)}개점 {head.get(a, 0)}명")
+        L += ["", "📊 기준은 인당 평균 실적!",
+              "   인원 수 상관없이 공정하게 겨룹니다.",
+              "   딱 1인 1건이면 평균 1.0건이에요 💪", "",
+              "🎁 시상금",
+              f"   🥇 1위 {BATTLE_PRIZES[0]:,}원",
+              f"   🥈 2위 {BATTLE_PRIZES[1]:,}원",
+              f"   🥉 3위 {BATTLE_PRIZES[2]:,}원", "",
+              "우리 상권, 다 같이 채워봅시다 🔥"]
+        return "\n".join(L)
+
+    # 중간 현황 (전일까지 누적)
+    total = {a: 0 for a in BATTLE_AREAS}
+    try:
+        with open("data/daily_sales.csv", newline="", encoding="utf-8-sig") as fp:
+            for r in list(csv.reader(fp))[1:]:
+                if len(r) < 3 or not (BATTLE_START <= r[0] < today_str):
+                    continue
+                store = r[1].split(" ", 1)[0] if " " in r[1] else r[1]
+                a = B_S2A.get(store.strip())
+                if a:
+                    try:
+                        total[a] += int(r[2])
+                    except ValueError:
+                        pass
+    except FileNotFoundError:
+        print("[대항전] 실적 파일이 없어 현황 생략")
+        return ""
+
+    rows = sorted(({"area": a, "sum": total[a], "head": head.get(a, 0),
+                    "avg": total[a] / head[a] if head.get(a) else 0}
+                   for a in BATTLE_AREAS), key=lambda r: -r["avg"])
+    d1 = datetime.strptime(BATTLE_START, "%Y-%m-%d").date()
+    d2 = datetime.strptime(today_str, "%Y-%m-%d").date()
+    day = sum(1 for i in range((d2 - d1).days)
+              if (d1 + timedelta(i)).weekday() != 6)     # 전일까지 진행일수
+
+    MEDAL = ["🥇", "🥈", "🥉"]
+    L = [f"🏁 상권 대항전 현황 ({day}일차 종료 시점)", ""]
+    for i, r in enumerate(rows):
+        L.append(f"  {MEDAL[i]} {r['area']}  {r['avg']:.2f}건"
+                 f"  ({r['sum']}건 / {r['head']}명)")
+    gap = rows[0]["avg"] - rows[-1]["avg"]
+    L.append("")
+    if gap < 0.3:
+        L.append(f"1위와 3위 차이 {gap:.2f}건! 초접전입니다 🔥🔥")
+    else:
+        L.append(f"1위와 3위 차이 {gap:.2f}건 · 아직 뒤집을 수 있어요 🔥")
+    L.append("오늘도 1인 1건, 우리 상권 채워봅시다 💪")
+    return "\n".join(L)
+
+
 def main():
     weekday = datetime.now(KST).weekday()
     if weekday == 6:
         print("일요일은 게시하지 않습니다.")
         return
- 
+
     FAIL_MARK = "날씨 정보를 일시적으로 불러오지 못했어요"
- 
+
     def make():
         return build_weekly() if weekday == 0 else build_today()
- 
+
     text = make()
     n_fail = text.count(FAIL_MARK)
     # 전 지역 실패면 기상청 일시 장애일 가능성 → 60초 뒤 한 번 더 시도
@@ -718,12 +822,12 @@ def main():
         text = make()
         n_fail = text.count(FAIL_MARK)
         print(f"[날씨] 재시도 결과 실패 {n_fail}건")
- 
+
     if n_fail >= 5:
         # 그래도 전부 실패하면 날씨는 빼고 뉴스만 게시(깨진 표 방지)
         print("[날씨] 재시도 후에도 전 지역 실패 - 날씨 생략하고 뉴스만 게시합니다")
         text = None
- 
+
     # 뉴스 (실패해도 날씨는 정상 게시)
     try:
         news = build_news_html()
@@ -731,7 +835,7 @@ def main():
         print(f"[뉴스] build_news_html 예외: {e!r}")
         news = ""
     print(f"[뉴스] 최종 뉴스블록 길이: {len(news)}")
- 
+
     if text is None:
         if not news:
             print("[날씨] 게시할 내용이 없어 종료합니다")
@@ -746,11 +850,11 @@ def main():
         body = _html.escape(text)      # 날씨 본문(특수문자 안전 처리)
         if news:
             body = body + "\n\n" + news   # 뉴스는 이미 HTML이라 그대로 붙임
- 
+
     tg_send({"chat_id": TARGET_CHAT_ID, "text": body,
              "parse_mode": "HTML",
              "link_preview_options": {"is_disabled": True}}, "날씨")
- 
+
     # ── 오늘의 포춘쿠키: 날씨 메시지에 이어서 게시 ──
     try:
         print("[포춘] 생성 시작")
@@ -764,8 +868,18 @@ def main():
     except Exception:
         print("[포춘] 처리 실패 - 상세:")
         traceback.print_exc()
- 
- 
+
+    # ── 상권 대항전: 포춘쿠키 다음에 별도 게시
+    try:
+        bt = build_battle_text(datetime.now(KST).strftime("%Y-%m-%d"))
+        if bt:
+            time.sleep(5)
+            tg_send({"chat_id": TARGET_CHAT_ID, "text": bt}, "대항전")
+    except Exception:
+        print("[대항전] 처리 실패 - 상세:")
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -773,4 +887,3 @@ if __name__ == "__main__":
         # 어떤 오류가 나도 워크플로 자체는 실패시키지 않고 원인만 남긴다
         print("[치명적 오류] main() 예외 - 상세:")
         traceback.print_exc()
- 
