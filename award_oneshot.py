@@ -43,6 +43,12 @@ MILESTONE_STEP = 10     # 달성 축하 단위(건)
 STEADY_STEP    = 10     # 꾸준왕 단위(실적 발생일수)
 NOSALE_STEP    = 5      # 무실적 응원 단위(일요일 제외 일수)
 CLEANWEEK_PRIZE = 100000   # 클린위크(월~토 무실적 0일) 매장 시상금
+
+# ── 상권 대항전 (기간 한정 이벤트) ────────────────────
+BATTLE_ON     = True
+BATTLE_START  = "2026-09-07"     # 월요일
+BATTLE_END    = "2026-09-12"     # 토요일
+BATTLE_PRIZES = [2000000, 1000000, 500000]   # 상권 대항전 1~3위 시상금
 NOTICE = "내일도 1인 1건! 우리 지사 파이팅 💪"
 
 # ── 상권 구성 (표시는 축약명) ─────────────────────
@@ -336,6 +342,39 @@ def clean_week(counts, hist, today):
                   if all(s in by_day[d] for d in week_days))
 
 
+def area_battle(counts, hist, today_str):
+    """상권 대항전: 기간 내 누적 실적 / 상권 소속 인원 = 인당 평균."""
+    if not (BATTLE_ON and BATTLE_START <= today_str <= BATTLE_END):
+        return None
+    roster, _ = load_roster()
+    head = {}                                    # 상권별 인원
+    for full in roster:
+        a = STORE_AREA.get(split_name(full)[0])
+        if a:
+            head[a] = head.get(a, 0) + 1
+    total = {a: 0 for a in AREAS}                # 상권별 누적 건수
+    for d, name, c in hist:
+        if BATTLE_START <= d <= BATTLE_END:
+            a = STORE_AREA.get(split_name(name)[0])
+            if a:
+                total[a] += c
+    for name, c in counts.items():
+        a = STORE_AREA.get(split_name(name)[0])
+        if a:
+            total[a] += c
+    rows = []
+    for a in AREAS:
+        n = head.get(a, 0)
+        rows.append({"area": a, "sum": total[a], "head": n,
+                     "avg": (total[a] / n) if n else 0})
+    rows.sort(key=lambda r: -r["avg"])
+    # 경과 일수(일요일 제외)
+    d1 = datetime.strptime(BATTLE_START, "%Y-%m-%d").date()
+    d2 = datetime.strptime(today_str, "%Y-%m-%d").date()
+    return {"rows": rows, "day": workdays(d1, d2),
+            "final": today_str == BATTLE_END}
+
+
 def compute_result(counts):
     now = datetime.now(KST)
     today_str = now.strftime("%Y-%m-%d")
@@ -419,6 +458,7 @@ def compute_result(counts):
         "areas": areas, "full_stores": full_stores,
         "milestones": ms, "steadies": st, "nosales": ns,
         "clean_week": clean_week(counts, hist, today) if CLEANWEEK_ON else [],
+        "battle": area_battle(counts, hist, today_str),
     }
 
 
@@ -500,6 +540,33 @@ def build_message(res):
         for d in sorted(res["nosales"], reverse=True):
             L.append(f"  · {d}일째 — {_fmt(res['nosales'][d])}")
         L.append(f"  {random.choice(NOSALE_CHEERS)}")
+
+    # ── 상권 대항전
+    b = res.get("battle")
+    if b:
+        MEDAL = ["🥇", "🥈", "🥉"]
+        L.append("")
+        if b["final"]:
+            win = b["rows"][0]
+            L.append("🏆🏆 상권 대항전 최종 결과 🏆🏆")
+            L.append("")
+            for i, r in enumerate(b["rows"]):
+                prize = BATTLE_PRIZES[i] if i < len(BATTLE_PRIZES) else 0
+                head = "우승 — " if i == 0 else ""
+                L.append(f"  {MEDAL[i]} {head}{r['area']} 상권"
+                         f"  ·  {prize:,}원")
+                L.append(f"     인당 평균 {r['avg']:.2f}건 "
+                         f"({r['sum']}건 / {r['head']}명)")
+            L.append("")
+            L.append(f"  🎊 {win['area']} 상권 우승 축하드립니다!! 🎊")
+            L.append("  6일간 정말 치열했습니다. 세 상권 모두 고생 많으셨어요 👏🔥")
+        else:
+            L.append(f"🏁 상권 대항전 ({b['day']}일차 마감)")
+            for i, r in enumerate(b["rows"]):
+                L.append(f"  {MEDAL[i]} {r['area']} {r['avg']:.2f}건 "
+                         f"({r['sum']}건 / {r['head']}명)")
+            gap = b["rows"][0]["avg"] - b["rows"][-1]["avg"]
+            L.append(f"  1위와 3위 차이 {gap:.2f}건 · 아직 모릅니다 🔥")
 
     L += ["", NOTICE]
     return "\n".join(L)
