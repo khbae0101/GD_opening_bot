@@ -1,41 +1,43 @@
 name: Award Star
- 
+
 on:
-  # 실행은 cron-job.org가 마감 시간(저녁)에 호출(dispatch)해서 시작됩니다.
+  # 실행은 cron-job.org가 저녁(20:05)에 호출(dispatch)해서 시작됩니다.
   workflow_dispatch:
- 
+
 permissions:
-  contents: write          # CSV 파일을 저장소에 커밋하려면 쓰기 권한 필요
- 
+  contents: write          # CSV·원본 저장에 필요
+
 jobs:
   award:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
- 
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
- 
+
       - name: Install dependencies
         run: pip install requests anthropic
- 
+
       - name: Run award
         env:
           TELEGRAM_TOKEN_3:  ${{ secrets.TELEGRAM_TOKEN_3 }}
           TARGET_CHAT_ID_3:  ${{ secrets.TARGET_CHAT_ID_3 }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python award_oneshot.py
- 
+
+      # 스크립트가 실패해도 읽어온 원본은 반드시 저장한다
       - name: Commit data
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/award_results.csv data/daily_sales.csv 2>/dev/null || true
+          git pull --rebase --autostash || true
+          git add data/raw data/award_results.csv data/daily_sales.csv 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음 - 커밋 생략"
           else
             git commit -m "시상 데이터 업데이트"
             git push
           fi
- 
