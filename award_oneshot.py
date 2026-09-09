@@ -602,10 +602,45 @@ def write_csv(res):
     _upsert_csv(SALES_CSV, ["날짜", "점명이름", "건수"], rows, d)
 
 
+RAW_DIR = "data/raw"
+SEP = "\n<<<MSG>>>\n"
+
+
+def raw_path(date_str):
+    return f"{RAW_DIR}/{date_str}.txt"
+
+
+def save_raw(msgs, date_str):
+    """읽은 원본을 즉시 append 저장(중간 점검 봇과 같은 파일)."""
+    if not msgs:
+        return 0
+    os.makedirs(RAW_DIR, exist_ok=True)
+    with open(raw_path(date_str), "a", encoding="utf-8") as f:
+        for m in msgs:
+            f.write(m.replace(SEP.strip(), " ") + SEP)
+    return len(msgs)
+
+
+def load_raw(date_str):
+    try:
+        with open(raw_path(date_str), encoding="utf-8") as f:
+            txt = f.read()
+    except FileNotFoundError:
+        return []
+    return [m.strip() for m in txt.split(SEP) if m.strip()]
+
+
 def main():
-    raw = fetch_messages()
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+
+    # ① 남은 메시지를 읽어 원본에 즉시 추가 저장
+    new_msgs = fetch_messages()
+    print(f"[시상] 신규 {save_raw(new_msgs, today)}건 저장 → {raw_path(today)}")
+
+    # ② 오늘 누적 원본 전체로 집계 (중간 점검 봇이 저장한 것 포함)
+    raw = load_raw(today)
     msgs = [t for t in raw if looks_like_report(t)]
-    print(f"[시상] 실적 보고로 인식 {len(msgs)}건 / 전체 {len(raw)}건")
+    print(f"[시상] 오늘 누적 {len(raw)}건 · 실적 보고 {len(msgs)}건")
     if not msgs:
         if raw:
             print("[시상] 메시지는 있으나 실적 보고 형식이 아닙니다. 예시: "
