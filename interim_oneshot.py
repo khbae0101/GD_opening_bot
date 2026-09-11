@@ -67,9 +67,37 @@ ALL_STORES = [s for ss in AREAS.values() for s in ss]
 # 실적 보고로 보이는 메시지 판별 (시상봇과 동일 기준)
 REPORT_HINTS = ("기변", "신규", "번이", "MNP", "mnp", "요할", "심플", "단할", "공시")
 
+# 아이폰18 사전예약 제외 (출시 전까지 실적으로 세지 않음)
+IP18_EXCLUDE_UNTIL = "2026-09-17"      # 9/18(출시일)부터 정상 집계
+IP18_PAT = re.compile(r"^(aip\s*18|아\s*18|아이폰\s*18|18\s*프)", re.I)
+# 개통 줄이 아닌 것(2nd 기기 · 유선 · 안내)
+SKIP_PAT = re.compile(
+    r"(2nd|2ND|세컨|순신규|약갱|약정갱신|에센스|베이직\s*\+|모든\s*지|모든\s*G|"
+    r"GTT|MIT|ITT|신동|원스톱|인터넷|^Pre$)", re.I)
+
 
 def looks_like_report(t):
     return sum(1 for k in REPORT_HINTS if k in t) >= 2
+
+
+def has_real_sale(text, today_str):
+    """아이폰18 예약·2nd·유선을 뺀 '진짜 개통 줄'이 하나라도 있는지."""
+    exclude_ip18 = today_str <= IP18_EXCLUDE_UNTIL
+    for line in text.splitlines():
+        line = line.strip()
+        if "/" not in line:
+            continue                      # 개통 내역 줄은 "/"로 구분된다
+        if line.endswith(":") or "직영점" in line:
+            continue                      # 작성자 줄(점장/점장: 등)은 개통이 아님
+        model = line.split("/")[0].strip()
+        if not model or len(model) > 15 or model.count(" ") >= 2:
+            continue                      # 모델명은 짧다(A175, F971, 아18프맥 …)
+        if SKIP_PAT.search(line) or SKIP_PAT.search(model):
+            continue                      # 2nd·유선·순신규 등
+        if exclude_ip18 and IP18_PAT.match(model.replace(" ", "")):
+            continue                      # 아이폰18 사전예약
+        return True
+    return False
 
 
 # ── 원본 저장/로드 ───────────────────────────────
@@ -155,10 +183,12 @@ def tg_send(text, retries=3):
 
 
 # ── 매장 인식 ────────────────────────────────────
-def reported_stores(msgs):
-    """메시지에서 실적을 공유한 매장 집합을 뽑는다(규칙 기반, AI 미사용)."""
+def reported_stores(msgs, today_str):
+    """실적을 공유한 매장 집합(규칙 기반). 아이폰18 예약만 있는 보고는 제외."""
     done = set()
     for t in msgs:
+        if not has_real_sale(t, today_str):
+            continue
         for line in t.splitlines():
             line = line.strip()
             if not line or "/" in line:        # 개통 내역 줄은 건너뜀
@@ -224,7 +254,7 @@ def main():
     # ② 오늘 누적 전체로 판정
     all_msgs = load_raw(today)
     reports = [t for t in all_msgs if looks_like_report(t)]
-    done = reported_stores(reports)
+    done = reported_stores(reports, today)
     print(f"[중간] 오늘 누적 {len(all_msgs)}건 · 실적 보고 {len(reports)}건"
           f" · 공유 매장 {len(done)}곳")
 
