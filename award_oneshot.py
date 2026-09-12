@@ -13,6 +13,7 @@
 """
 
 import os
+import re
 import csv
 import json
 import random
@@ -42,6 +43,19 @@ SLUCKY_MIN, SLUCKY_MAX, SLUCKY_STEP = 20000, 50000, 5000    # 매장 럭키 (1�
 MILESTONE_STEP = 10     # 달성 축하 단위(건)
 STEADY_STEP    = 10     # 꾸준왕 단위(실적 발생일수)
 NOSALE_STEP    = 5      # 무실적 응원 단위(일요일 제외 일수)
+
+# ── 모델 선착순 이벤트 (기간 한정) ───────────────
+MODEL_RACE_ON = True
+MODEL_RACE = {   # 날짜: (종목명, 안내표기, 모델 판별 정규식)
+    "2026-09-14": ("S26 시리즈", "S942 · S946 · S948 · S26",
+                   r"^(S9(42|46|48)|S26|26울트라)"),
+    "2026-09-15": ("폴더블8 시리즈", "F971 · F976 · F776",
+                   r"^(F97[16]|F77[06]|폴드8|플립8)"),
+    "2026-09-16": ("A175", "A175", r"^A175"),
+}
+MODEL_RACE_WINNERS = 5        # 선착순 인원
+MODEL_RACE_PRIZE   = 30000    # 1인당 시상금
+MODEL_RACE_CSV     = "data/model_race.csv"
 
 # 아이폰18 사전예약 제외 (출시 전까지 예약건은 실적으로 세지 않음)
 IP18_EXCLUDE_UNTIL = "2026-09-17"   # 이 날짜까지 제외, 9/18(출시일)부터 정상 집계
@@ -393,7 +407,96 @@ def area_battle(counts, hist, today_str):
             "final": today_str == BATTLE_END}
 
 
-def compute_result(counts):
+RACE_SKIP = re.compile(
+    r"(2nd|2ND|세컨|순신규|약갱|약정갱신|에센스|모든\s*[지G]|GTT|MIT|ITT|UIT|MUIT|"
+    r"신동|원스톱|인터넷|일반전화|오피스넷|가전구독|단품|제카|위약금)", re.I)
+
+RACE_ALIASES = {}
+for _a, _ss in AREAS.items():
+    for _s in _ss:
+        RACE_ALIASES[_s] = _s
+        RACE_ALIASES[SHORT[_s]] = _s
+for _k, _v in {"의로": "의정부로데오", "의정부": "의정부로데오", "덕계": "양주덕계",
+               "건대입구": "건대입구역", "지행역": "지행역", "상봉역": "상봉역",
+               "먹골역": "먹골역", "면목역": "면목역", "외대역": "외대역",
+               "상계역": "상계역", "중계": "중계아울렛", "구리": "구리리맥스",
+               "임당": "강릉임당", "유천": "강릉유천", "무실": "원주무실",
+               "동해": "동해천곡", "홍천": "홍천중앙", "옥정": "옥정신도시",
+               "다산": "다산신도시", "자양": "자양번영로", "도농": "도농로",
+               "금호": "금호동", "삼양": "삼양로"}.items():
+    RACE_ALIASES.setdefault(_k, _v)
+
+
+def _race_person(line):
+    """'동해천곡 김성은' 같은 점명·이름 줄이면 (표준매장, 이름) 반환."""
+    if "/" in line or line.endswith(":") or "직영점" in line:
+        return None
+    parts = line.split()
+    if len(parts) != 2:
+        return None
+    store = RACE_ALIASES.get(parts[0])
+    name = parts[1]
+    if not store or not (2 <= len(name) <= 4):
+        return None
+    return store, name
+
+
+def model_race(raw_msgs, today_str):
+    """오늘 종목 모델을 먼저 보고한 순서대로 선착순 N명. 기간 밖이면 None."""
+    if not (MODEL_RACE_ON and today_str in MODEL_RACE):
+        return None
+    label, models, pat = MODEL_RACE[today_str]
+    rx = re.compile(pat, re.I)
+    winners, seen, total, cur = [], set(), 0, None
+    for msg in raw_msgs:
+        for line in msg.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            p = _race_person(line)
+            if p:
+                cur = p
+                continue
+            if "/" not in line or line.endswith(":") or "직영점" in line:
+                continue
+            model = line.split("/")[0].strip()
+            if not model or len(model) > 15 or model.count(" ") >= 2:
+                continue
+            if RACE_SKIP.search(line) or RACE_SKIP.search(model):
+                continue
+            t = model.upper().replace(" ", "").replace("-512", "")
+            if not rx.match(t):
+                continue
+            total += 1
+            if cur and cur not in seen:
+                seen.add(cur)
+                winners.append((cur, model))
+    return {"label": label, "models": models, "total": total,
+            "winners": winners[:MODEL_RACE_WINNERS]}
+
+
+def save_model_race(res, today_str):
+    """선착순 결과 기록(다음 날 아침 안내에 사용)."""
+    r = res.get("race")
+    if not r:
+        return
+    try:
+        os.makedirs(os.path.dirname(MODEL_RACE_CSV), exist_ok=True)
+        rows = []
+        if os.path.exists(MODEL_RACE_CSV):
+            with open(MODEL_RACE_CSV, newline="", encoding="utf-8-sig") as f:
+                rows = [x for x in list(csv.reader(f))[1:] if x and x[0] != today_str]
+        rows.append([today_str, r["label"], len(r["winners"]), r["total"],
+                     ", ".join(f"{SHORT[s]} {n}" for (s, n), _ in r["winners"])])
+        with open(MODEL_RACE_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["날짜", "종목", "달성인원", "총건수", "당첨자"])
+            w.writerows(sorted(rows, key=lambda x: x[0]))
+    except Exception as e:
+        print(f"[선착순] 기록 실패: {e!r}")
+
+
+def compute_result(counts, raw_msgs=None):
     now = datetime.now(KST)
     today_str = now.strftime("%Y-%m-%d")
     today = now.date()
@@ -477,6 +580,7 @@ def compute_result(counts):
         "milestones": ms, "steadies": st, "nosales": ns,
         "clean_week": clean_week(counts, hist, today) if CLEANWEEK_ON else [],
         "battle": area_battle(counts, hist, today_str),
+        "race": model_race(raw_msgs or [], today_str),
     }
 
 
@@ -558,6 +662,27 @@ def build_message(res):
         for d in sorted(res["nosales"], reverse=True):
             L.append(f"  · {d}일째 — {_fmt(res['nosales'][d])}")
         L.append(f"  {random.choice(NOSALE_CHEERS)}")
+
+    # ── 모델 선착순
+    rc = res.get("race")
+    if rc:
+        L.append("")
+        L.append(f"🎯 모델 선착순 — 오늘의 모델: {rc['label']}")
+        L.append("")
+        if rc["winners"]:
+            for i, ((store, name), model) in enumerate(rc["winners"], 1):
+                L.append(f"  {i}번째 — {short(store)} {name} ({model})")
+            L.append("")
+            L.append(f"  각 {MODEL_RACE_PRIZE:,}원! 축하드립니다 🎊")
+            n = len(rc["winners"])
+            if n >= MODEL_RACE_WINNERS:
+                L.append(f"  (오늘 총 {rc['total']}건 중 선착순 {n}명)")
+            else:
+                L.append(f"  오늘은 {n}명이 달성했습니다. "
+                         f"내일은 {MODEL_RACE_WINNERS}명 모두 채워봐요 💪")
+        else:
+            L.append("  오늘은 해당 모델 판매가 없었습니다 😢")
+            L.append("  내일은 꼭! 💪")
 
     # ── 상권 대항전
     b = res.get("battle")
@@ -669,11 +794,12 @@ def main():
     if not counts:
         print("집계 결과가 비어 있습니다. 게시하지 않습니다.")
         return
-    res = compute_result(counts)
+    res = compute_result(counts, raw)
     text = build_message(res)
     requests.post(f"{TG}/sendMessage",
                   json={"chat_id": CHAT_ID, "text": text}, timeout=30)
     write_csv(res)   # 데이터 기록 (GitHub에 저장됨)
+    save_model_race(res, today)
     print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건 · CSV 기록 완료")
 
 
