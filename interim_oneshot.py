@@ -77,7 +77,17 @@ SKIP_PAT = re.compile(
 
 
 def looks_like_report(t):
-    return sum(1 for k in REPORT_HINTS if k in t) >= 2
+    """실적 보고 판별. 키워드 2개 이상이거나, 개통 줄 형태가 하나라도 있으면 인정."""
+    if sum(1 for k in REPORT_HINTS if k in t) >= 2:
+        return True
+    # 축약 보고 대응: "모델/개통유형/요금제/…" 형태가 있으면 실적으로 본다
+    for line in t.splitlines():
+        line = line.strip()
+        if line.count("/") < 2 or line.endswith(":") or "직영점" in line:
+            continue
+        if any(k in line for k in REPORT_HINTS):
+            return True
+    return False
 
 
 def has_real_sale(text, today_str):
