@@ -802,6 +802,75 @@ def build_battle_text(today_str):
     return "\n".join(L)
 
 
+# ── 모델 선착순 이벤트 (아침 안내) ───────────────
+RACE_ON = True
+RACE_SCHEDULE = {   # 날짜: (종목명, 안내표기)
+    "2026-09-14": ("S26 시리즈", "S942 · S946 · S948 · S26"),
+    "2026-09-15": ("폴더블8 시리즈", "F971 · F976 · F776"),
+    "2026-09-16": ("A175", "A175"),
+}
+RACE_WINNERS = 5
+RACE_PRIZE   = 30000
+RACE_CSV     = "data/model_race.csv"
+
+
+def _race_yesterday():
+    """전날 달성 인원(없으면 None)."""
+    import csv
+    try:
+        with open(RACE_CSV, newline="", encoding="utf-8-sig") as f:
+            rows = [r for r in list(csv.reader(f))[1:] if len(r) >= 3]
+    except FileNotFoundError:
+        return None
+    rows = [r for r in rows if r[0] in RACE_SCHEDULE]
+    if not rows:
+        return None
+    try:
+        return int(rows[-1][2])
+    except ValueError:
+        return None
+
+
+def build_race_text(today_str):
+    """모델 선착순 아침 안내. 기간 밖이면 빈 문자열."""
+    if not (RACE_ON and today_str in RACE_SCHEDULE):
+        return ""
+    days = sorted(RACE_SCHEDULE)
+    idx = days.index(today_str)
+    label, models = RACE_SCHEDULE[today_str]
+    d1 = datetime.strptime(days[0], "%Y-%m-%d")
+    d2 = datetime.strptime(days[-1], "%Y-%m-%d")
+
+    if idx == 0:
+        L = [f"🎯 모델 선착순 이벤트 시작! "
+             f"({d1.month}/{d1.day}~{d2.month}/{d2.day})", "",
+             f"이번 주는 {len(days)}일간 매일 다른 모델로 겨룹니다!", ""]
+    elif idx == len(days) - 1:
+        L = ["🎯 모델 선착순 (마지막 날!)", ""]
+    else:
+        L = [f"🎯 모델 선착순 ({idx + 1}일차)", ""]
+
+    L.append(f"📱 오늘의 모델 — {label}")
+    if models != label:
+        L.append(f"   ({models})")
+    L += ["", f"선착순 {RACE_WINNERS}명에게 각 {RACE_PRIZE:,}원! 💰",
+          "먼저 판매하신 순서대로 결정됩니다.",
+          "※ 실적공유방 등록 순서 기준", ""]
+
+    y = _race_yesterday() if idx > 0 else None
+    if y is not None:
+        if y >= RACE_WINNERS:
+            L.append(f"어제는 {y}명이 모두 채웠습니다. 오늘은 더 빠르게! 🔥")
+        else:
+            L.append(f"어제는 {y}명이 달성했습니다. "
+                     f"오늘은 {RACE_WINNERS}명 모두 채워봐요 🔥")
+    elif idx == len(days) - 1:
+        L.append("오늘이 마지막입니다. 먼저 판매하는 사람이 임자! 🔥")
+    else:
+        L.append("오늘 하루, 먼저 판매하는 사람이 임자! 🔥")
+    return "\n".join(L)
+
+
 def main():
     weekday = datetime.now(KST).weekday()
     if weekday == 6:
@@ -867,6 +936,16 @@ def main():
             print("[포춘] 내용이 비어 게시하지 않음 (명단 확인 필요)")
     except Exception:
         print("[포춘] 처리 실패 - 상세:")
+        traceback.print_exc()
+
+    # ── 모델 선착순: 별도 게시 (기간에만)
+    try:
+        rt = build_race_text(datetime.now(KST).strftime("%Y-%m-%d"))
+        if rt:
+            time.sleep(5)
+            tg_send({"chat_id": TARGET_CHAT_ID, "text": rt}, "선착순")
+    except Exception:
+        print("[선착순] 처리 실패 - 상세:")
         traceback.print_exc()
 
     # ── 상권 대항전: 포춘쿠키 다음에 별도 게시
