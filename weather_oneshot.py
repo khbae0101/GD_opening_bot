@@ -938,6 +938,21 @@ def main():
         print("[포춘] 처리 실패 - 상세:")
         traceback.print_exc()
 
+    # ── 프로모션: 1일차 목표 안내 / 2일차 누적 표 (기간에만)
+    try:
+        import promo
+        _today = datetime.now(KST).strftime("%Y-%m-%d")
+        if promo.is_promo_day(_today):
+            time.sleep(5)
+            promo.post_morning(
+                TG, TARGET_CHAT_ID, _today,
+                lambda t: tg_send({"chat_id": TARGET_CHAT_ID, "text": t}, "프로모션"))
+    except ImportError:
+        pass
+    except Exception:
+        print("[프로모션] 처리 실패 - 상세:")
+        traceback.print_exc()
+
     # ── 모델 선착순: 별도 게시 (기간에만)
     try:
         rt = build_race_text(datetime.now(KST).strftime("%Y-%m-%d"))
