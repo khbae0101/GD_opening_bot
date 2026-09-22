@@ -1,25 +1,28 @@
 name: Weather Summary
- 
+
 on:
   # 실행은 cron-job.org가 매일 아침(월~토) 호출(dispatch)해서 시작됩니다.
   workflow_dispatch:
- 
+
 permissions:
   contents: write          # 포춘쿠키 선정 이력(CSV) 저장에 필요
- 
+
 jobs:
   weather:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
- 
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
- 
+
+      - name: Install Korean fonts
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+
       - name: Install dependencies
-        run: pip install requests anthropic
- 
+        run: pip install requests anthropic pillow
+
       - name: Run weather
         env:
           TELEGRAM_TOKEN_3:  ${{ secrets.TELEGRAM_TOKEN_3 }}
@@ -27,7 +30,7 @@ jobs:
           KMA_SERVICE_KEY:   ${{ secrets.KMA_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python weather_oneshot.py
- 
+
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"
@@ -39,4 +42,3 @@ jobs:
             git commit -m "포춘쿠키 선정 이력 업데이트"
             git push
           fi
- 
