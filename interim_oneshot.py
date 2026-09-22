@@ -270,6 +270,14 @@ def main():
 
     tg_send(build_message(done, now))
 
+    # ── 프로모션 기간이면 달성 현황 표 이어서 게시 (기간 밖이면 아무것도 안 함)
+    try:
+        import promo
+        time.sleep(3)
+        promo.post_status(TG, CHAT_ID, today, f"{now.hour}시")
+    except ImportError:
+        pass
+
 
 if __name__ == "__main__":
     try:
