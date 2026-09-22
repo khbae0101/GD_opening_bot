@@ -802,6 +802,14 @@ def main():
     save_model_race(res, today)
     print(f"시상 게시 완료 · 참여 {len(counts)}명 / 총 {sum(counts.values())}건 · CSV 기록 완료")
 
+    # ── 프로모션 기간이면 달성 현황 표 이어서 게시 (기간 밖이면 아무것도 안 함)
+    try:
+        import promo, time as _t
+        _t.sleep(3)
+        promo.post_status(TG, CHAT_ID, today, "마감")
+    except ImportError:
+        pass
+
 
 if __name__ == "__main__":
     main()
