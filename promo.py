@@ -31,6 +31,18 @@ PROMO_TARGETS = {
     "석사": 5, "홍천중앙": 4, "후평": 4, "온의": 3,
 }
 
+# 시상 기준 (안내 포스터용 · 실제 정산은 요금제 확인 후 별도)
+PROMO_RULES = [   # (구분, 보조설명, 달성 매장 건당, 미달 매장 건당)
+    ("37K 이상 실적", None, 30000, 10000),
+    ("프리미엄 모델 + 120K 이상", "프리미엄: 출고가 100만원 이상", 50000, 30000),
+]
+PROMO_NOTES = [
+    "목표 달성 여부는 2일 합산 휴대폰 개통 전체 건수(실적공유방 기준)로 판단",
+    "프리미엄 + 120K 이상 건은 5만원만 지급 (중복 지급 없음)",
+    "최종 시상금은 요금제 확인 후 별도 정산",
+    "시상 예산은 10월 시드머니로 반영",
+]
+
 AREAS = {
     "광구": ["도농로", "구리리맥스", "자양번영로", "다산신도시", "건대입구역",
              "면목역", "상봉역", "외대역", "금호동", "진접"],
@@ -228,6 +240,90 @@ def render_table(counts, title, subtitle, path="promo.png"):
     return path, n_ok, A, T
 
 
+# ── 1일차 아침 안내 포스터 ──────────────────────
+def _md_wk(date_str):
+    from datetime import date
+    y, m, d = map(int, date_str.split("-"))
+    return f"{m}/{d}({'월화수목금토일'[date(y, m, d).weekday()]})"
+
+
+def render_poster(path="promo_poster.png"):
+    from PIL import Image, ImageDraw
+    W, M = 1080, 44
+    NAVY = (16, 42, 84); TEAL = (0, 150, 160); DARK = (35, 45, 60); GRAY = (110, 120, 132)
+    LINE = (226, 230, 236); SOFT = (240, 244, 249); GREEN = (0, 128, 96); ORANGE = (214, 120, 20)
+    img = Image.new("RGB", (W, 1800), "white")
+    d = ImageDraw.Draw(img)
+    T = sum(PROMO_TARGETS.values())
+    d.rectangle([0, 0, W, 190], fill=NAVY)
+    d.text((M, 40), PROMO_NAME, font=_font(True, 58), fill="white")
+    d.text((M, 122), f"{_md_wk(PROMO_DAYS[0])} ~ {_md_wk(PROMO_DAYS[-1])}  ·  "
+                     f"{len(PROMO_DAYS)}일 합산  ·  지사 목표 {T}건",
+           font=_font(False, 30), fill=(190, 205, 225))
+    y = [230]
+
+    def section(title):
+        d.rounded_rectangle([M, y[0] + 6, M + 8, y[0] + 38], radius=3, fill=TEAL)
+        d.text((M + 22, y[0]), title, font=_font(True, 34), fill=NAVY)
+        y[0] += 62
+
+    section("시상 기준 (건당 지급)")
+    C = [M, M + 430, M + 716, W - M]
+    d.rectangle([C[0], y[0], C[3], y[0] + 56], fill=NAVY)
+    for i, t in enumerate(["구분", "목표 달성 매장", "목표 미달 매장"]):
+        d.text(((C[i] + C[i + 1]) / 2, y[0] + 28), t, font=_font(True, 27),
+               fill="white", anchor="mm")
+    y[0] += 56
+    y_tbl = y[0]
+    for i, (label, sub, ok, ng) in enumerate(PROMO_RULES):
+        h = 100 if sub else 84
+        d.rectangle([C[0], y[0], C[3], y[0] + h], fill=SOFT if i % 2 else "white")
+        if sub:
+            d.text((C[0] + 22, y[0] + h / 2 - 16), label, font=_font(True, 28), fill=DARK, anchor="lm")
+            d.text((C[0] + 22, y[0] + h / 2 + 20), sub, font=_font(False, 22), fill=GRAY, anchor="lm")
+        else:
+            d.text((C[0] + 22, y[0] + h / 2), label, font=_font(True, 28), fill=DARK, anchor="lm")
+        d.text(((C[1] + C[2]) / 2, y[0] + h / 2), f"{ok:,}원", font=_font(True, 34),
+               fill=GREEN, anchor="mm")
+        d.text(((C[2] + C[3]) / 2, y[0] + h / 2), f"{ng:,}원", font=_font(True, 30),
+               fill=ORANGE, anchor="mm")
+        d.line([C[0], y[0] + h, C[3], y[0] + h], fill=LINE, width=2)
+        y[0] += h
+    for x in C[1:-1]:
+        d.line([x, y_tbl, x, y[0]], fill=LINE, width=2)
+    y[0] += 18
+    for t in PROMO_NOTES:
+        d.text((M + 6, y[0]), "· " + t, font=_font(False, 25), fill=GRAY)
+        y[0] += 38
+    y[0] += 34
+
+    section(f"매장별 목표 ({len(PROMO_DAYS)}일 합산)")
+    for area, stores in AREAS.items():
+        at = sum(PROMO_TARGETS[s] for s in stores)
+        rows_n = (len(stores) + 4) // 5
+        ch = 70 + rows_n * 62
+        d.rounded_rectangle([M, y[0], W - M, y[0] + ch], radius=16, fill=SOFT)
+        d.text((M + 26, y[0] + 22), area, font=_font(True, 32), fill=NAVY)
+        d.text((W - M - 26, y[0] + 26), f"{at}건", font=_font(True, 30), fill=TEAL, anchor="ra")
+        cw = (W - 2 * M - 40) / 5
+        for i, s in enumerate(stores):
+            cx = M + 20 + (i % 5) * cw
+            cy = y[0] + 74 + (i // 5) * 62
+            d.rounded_rectangle([cx + 4, cy, cx + cw - 6, cy + 50], radius=10,
+                                fill="white", outline=LINE)
+            d.text((cx + 18, cy + 25), SHORT_NAME.get(s, s), font=_font(False, 25),
+                   fill=DARK, anchor="lm")
+            d.text((cx + cw - 20, cy + 25), str(PROMO_TARGETS[s]), font=_font(True, 28),
+                   fill=TEAL, anchor="rm")
+        y[0] += ch + 20
+    y[0] += 10
+    d.text((W / 2, y[0]), "14·16·18시와 마감에 매장별 달성 현황을 표로 공유합니다",
+           font=_font(True, 26), fill=NAVY, anchor="ma")
+    y[0] += 60
+    img.crop((0, 0, W, y[0])).save(path)
+    return path
+
+
 # ── 아침 목표 안내(1일차) ────────────────────────
 def targets_text():
     d1, d2 = PROMO_DAYS[0], PROMO_DAYS[-1]
@@ -298,6 +394,14 @@ def post_morning(tg_base, chat_id, date_str, send_text):
     try:
         n = day_index(date_str)
         if n == 1:
+            try:
+                path = render_poster()
+                cap = (f"🎯 {PROMO_NAME} 시작! ({len(PROMO_DAYS)}일 합산)\n"
+                       f"매장별 목표와 시상 기준을 확인하시고 {len(PROMO_DAYS)}일간 힘차게 달려봐요 🔥")
+                if send_photo(tg_base, chat_id, path, cap):
+                    return
+            except Exception as exc:
+                print(f"[프로모션] 포스터 생성 실패 → 텍스트로 대체: {exc!r}")
             send_text(targets_text())
             return
         prev = [d for d in PROMO_DAYS if d < date_str]
