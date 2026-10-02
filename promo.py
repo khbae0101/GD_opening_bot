@@ -1,59 +1,56 @@
 """
-프로모션 공용 모듈 (날씨봇 · 중간봇 · 시상봇이 함께 사용)
+프로모션 공용 모듈 — 10월 1순기 후불 활성화 프로모션
 ─────────────────────────────────────────────
-- 기간·매장별 목표를 여기서만 관리한다.
-- 집계는 AI 없이 규칙 기반: data/raw/날짜.txt(실적 원본)에서 매장별 개통 줄 수를 센다.
-  → 14·16·18시·마감 어디서 세도 같은 규칙이라 숫자가 일관되게 쌓인다.
-- 기간이 아니면 아무것도 하지 않는다(다른 기능 영향 없음).
+- 기간: 10/2 ~ 10/10 (누적)  ·  Phase1 10/2~10/6  ·  Phase2 10/7~10/10
+- 집계: 실적공유방 원본(data/raw/날짜.txt)에서 매장별 개통 건수를 규칙으로 센다.
+        무실적 점검(14·16·18시)과 같은 기준이라 두 공지의 숫자가 어긋나지 않는다.
+- 공지: 아침(날씨봇) · 14/16/18시(중간봇) · 마감(시상봇) — 기간 밖이면 아무것도 안 함.
+- 날씨봇·중간봇·시상봇은 이 파일의 is_promo_day / post_morning / post_status 만 부른다.
 """
 
 import os
 import re
 import glob
 import time
+from datetime import date, timedelta
 
 import requests
 
 # ── 설정 ──────────────────────────────────────────
 PROMO_ON   = True
-PROMO_NAME = "9월 프로모션"
-PROMO_DAYS = ["2026-09-23", "2026-09-24"]      # 2일 합산
+PROMO_NAME = "10월 1순기 후불 활성화 프로모션"
+PERIOD     = ("2026-10-02", "2026-10-10")                  # 누적 기간
+PHASES     = [("Phase1", "2026-10-02", "2026-10-06"),
+              ("Phase2", "2026-10-07", "2026-10-10")]
 
-PROMO_TARGETS = {
-    # 광진/구리 (34)
-    "자양번영로": 3, "금호동": 3, "건대입구역": 4, "외대역": 3, "다산신도시": 3,
-    "진접": 3, "면목역": 3, "구리리맥스": 5, "상봉역": 3, "도농로": 4,
-    # 경기북부 (39)
-    "삼양로": 4, "수유": 7, "중계아울렛": 5, "먹골역": 4, "양주덕계": 3,
-    "의정부로데오": 4, "옥정신도시": 4, "지행역": 4, "상계역": 4,
-    # 강원 (37)
-    "원주무실": 4, "단구": 4, "강릉임당": 5, "동해천곡": 5, "강릉유천": 3,
-    "석사": 5, "홍천중앙": 4, "후평": 4, "온의": 3,
+PHASE_TARGETS = {
+    "Phase1": {
+        "자양번영로": 8, "금호동": 8, "건대입구역": 8, "외대역": 8, "면목역": 8,
+        "구리리맥스": 10, "상봉역": 8, "도농로": 9, "다산신도시": 8, "진접": 8,
+        "지행역": 7, "의정부로데오": 9, "옥정신도시": 9, "삼양로": 8, "수유": 14,
+        "중계아울렛": 11, "상계역": 8, "먹골역": 8, "양주덕계": 6,
+        "원주무실": 9, "단구": 9, "강릉임당": 9, "동해천곡": 10, "강릉유천": 8,
+        "석사": 11, "홍천중앙": 8, "후평": 9, "온의": 7,
+    },
 }
+PHASE_TARGETS["Phase2"] = dict(PHASE_TARGETS["Phase1"])      # Phase2 목표는 Phase1과 동일
 
-# 시상 기준 (안내 포스터용 · 실제 정산은 요금제 확인 후 별도)
-PROMO_RULES = [   # (구분, 보조설명, 달성 매장 건당, 미달 매장 건당)
-    ("37K 이상 실적", None, 30000, 10000),
-    ("프리미엄 모델 + 120K 이상", "프리미엄: 출고가 100만원 이상", 50000, 30000),
-]
-PROMO_NOTES = [
-    "목표 달성 여부는 2일 합산 휴대폰 개통 전체 건수(실적공유방 기준)로 판단",
-    "프리미엄 + 120K 이상 건은 5만원만 지급 (중복 지급 없음)",
-    "최종 시상금은 요금제 확인 후 별도 정산",
-    "시상 예산은 10월 시드머니로 반영",
-]
+DISCLAIMER = ("※ 이 장표는 실적공유방 공유 실적 기준으로 실제와 다를 수 있습니다. "
+              "최종 마감은 전산 데이터로 추출하여 별도 공지합니다.")
 
 AREAS = {
-    "광구": ["도농로", "구리리맥스", "자양번영로", "다산신도시", "건대입구역",
-             "면목역", "상봉역", "외대역", "금호동", "진접"],
-    "경북": ["중계아울렛", "수유", "의정부로데오", "옥정신도시", "삼양로",
-             "먹골역", "지행역", "상계역", "양주덕계"],
-    "강원": ["동해천곡", "석사", "강릉임당", "원주무실", "단구",
-             "강릉유천", "홍천중앙", "후평", "온의"],
+    "광진/구리": ["자양번영로", "금호동", "건대입구역", "외대역", "면목역",
+                 "구리리맥스", "상봉역", "도농로", "다산신도시", "진접"],
+    "경기북부": ["지행역", "의정부로데오", "옥정신도시", "삼양로", "수유",
+                "중계아울렛", "상계역", "먹골역", "양주덕계"],
+    "강원": ["원주무실", "단구", "강릉임당", "동해천곡", "강릉유천",
+            "석사", "홍천중앙", "후평", "온의"],
 }
-SHORT_NAME = {"의정부로데오": "의정부"}          # 표에서만 짧게
+AREA_SHORT = {"광진/구리": "광구", "경기북부": "경북", "강원": "강원"}
+STORE_SHORT = {"의정부로데오": "의정부"}
+STORES = [s for ss in AREAS.values() for s in ss]
 
-# 매장 인식 별칭 (모호한 "강릉", "양주"는 제외)
+# 매장 인식 별칭 — 중간봇(무실적 점검)과 동일. 모호한 "강릉", "양주"는 제외
 ALIASES = {
     "도농로": ["도농로", "도농"], "구리리맥스": ["구리리맥스", "구리"],
     "자양번영로": ["자양번영로", "자양"], "다산신도시": ["다산신도시", "다산"],
@@ -70,30 +67,54 @@ ALIASES = {
     "강릉유천": ["강릉유천", "유천"], "홍천중앙": ["홍천중앙", "홍천"],
     "후평": ["후평"], "온의": ["온의"],
 }
-_ALIAS_LIST = sorted(((k, s) for s, ks in ALIASES.items() for k in ks),
-                     key=lambda x: -len(x[0]))    # 긴 별칭부터 매칭
+_ALIAS_LIST = sorted(((k, s) for s, ks in ALIASES.items() for k in ks), key=lambda x: -len(x[0]))
 
 RAW_DIR = "data/raw"
 SEP = "\n<<<MSG>>>\n"
 
-HINTS = ("기변", "신규", "번이", "번호이동", "MNP", "mnp", "요할", "심플",
-         "단할", "공시", "공통")
-MODEL_PAT = re.compile(r"^([a-z]{1,4}\d|폴드|플립|아이폰|아\d|\d+울트라)", re.I)
+# 무실적 점검과 같은 판정 기준
+REPORT_HINTS = ("기변", "신규", "번이", "MNP", "mnp", "요할", "심플", "단할", "공시")
 SKIP_PAT = re.compile(
-    r"(2nd|세컨|순신규|약갱|약정갱신|에센스|모든\s*[지G]|GTT|MIT|ITT|UIT|MUIT|"
-    r"신동|원스톱|인터넷|일반전화|오피스넷|가전구독|단품|제카|위약금)", re.I)
+    r"(2nd|2ND|세컨|순신규|약갱|약정갱신|에센스|베이직\s*\+|모든\s*지|모든\s*G|"
+    r"GTT|MIT|ITT|신동|원스톱|인터넷|^Pre$)", re.I)
+RESV_PAT = re.compile(r"(예판|사전예약|사전\s*예약|락인)")     # 예약 건은 개통 아님
+
+
+# ── 날짜 도우미 ──────────────────────────────────
+def _d(s):
+    return date.fromisoformat(s)
+
+
+def _md(s):
+    d = _d(s)
+    return f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})"
+
+
+def _days(a, b):
+    """a~b(포함) 날짜 문자열 목록."""
+    out, d = [], _d(a)
+    while d <= _d(b):
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+def _workdays(a, b):
+    return sum(1 for s in _days(a, b) if _d(s).weekday() != 6)
 
 
 def is_promo_day(date_str):
-    return PROMO_ON and date_str in PROMO_DAYS
+    return PROMO_ON and PERIOD[0] <= date_str <= PERIOD[1]
 
 
-def day_index(date_str):
-    """1일차=1, 2일차=2 … (기간 밖이면 0)."""
-    return PROMO_DAYS.index(date_str) + 1 if date_str in PROMO_DAYS else 0
+def phase_of(date_str):
+    for name, a, b in PHASES:
+        if a <= date_str <= b:
+            return name, a, b
+    return None
 
 
-# ── 집계 (규칙 기반) ─────────────────────────────
+# ── 집계 (무실적 점검과 동일 기준) ───────────────
 def _load_raw(date_str):
     try:
         with open(f"{RAW_DIR}/{date_str}.txt", encoding="utf-8") as f:
@@ -103,53 +124,79 @@ def _load_raw(date_str):
     return [m.strip() for m in txt.split(SEP) if m.strip()]
 
 
+def _looks_like_report(t):
+    if sum(1 for k in REPORT_HINTS if k in t) >= 2:
+        return True
+    for line in t.splitlines():
+        line = line.strip()
+        if line.count("/") < 2 or line.endswith(":") or "직영점" in line:
+            continue
+        if any(k in line for k in REPORT_HINTS):
+            return True
+    return False
+
+
+def _is_sale_line(line):
+    if "/" not in line or line.endswith(":") or "직영점" in line:
+        return False
+    model = line.split("/")[0].strip()
+    if not model or len(model) > 15 or model.count(" ") >= 2:
+        return False
+    if SKIP_PAT.search(line) or SKIP_PAT.search(model) or RESV_PAT.search(line):
+        return False
+    return True
+
+
 def _store_of(line):
-    """줄 맨 앞의 매장명(별칭 포함)을 표준 매장명으로. 없으면 None."""
     for k, s in _ALIAS_LIST:
         if line.startswith(k):
             return s
     return None
 
 
-def _is_sale_line(line):
-    if line.count("/") < 1 or line.endswith(":") or "직영점" in line:
-        return False
-    model = line.split("/")[0].strip()
-    if not model or len(model) > 15 or model.count(" ") >= 2:
-        return False
-    if SKIP_PAT.search(line):
-        return False
-    return bool(MODEL_PAT.match(model.replace(" ", ""))) or any(h in line for h in HINTS)
-
-
-def count_store_sales(dates):
-    """주어진 날짜들의 원본에서 매장별 개통 건수."""
-    counts = {s: 0 for s in PROMO_TARGETS}
-    for d in dates:
-        for msg in _load_raw(d):
+def count_sales(dates):
+    """주어진 날짜들의 매장별 개통 건수."""
+    counts = {s: 0 for s in STORES}
+    for dt in dates:
+        for msg in _load_raw(dt):
+            if not _looks_like_report(msg):
+                continue
             cur = None
             for raw in msg.splitlines():
                 line = raw.strip()
                 if not line:
                     continue
-                if line.endswith(":") and "직영점" in line:      # 작성자 줄 → 기본 매장
-                    m = re.search(r"(\S+?)직영점", line)
-                    if m and cur is None:
-                        cur = _store_of(m.group(1))
-                    continue
-                if "/" not in line:                              # 점명·이름 줄
+                if "/" not in line:                 # 점명·이름 줄
                     s = _store_of(line)
                     if s:
                         cur = s
                     continue
                 if cur and _is_sale_line(line):
-                    counts[cur] = counts.get(cur, 0) + 1
+                    counts[cur] += 1
     return counts
 
 
-def dates_until(date_str):
-    """기간 시작부터 date_str까지(포함)."""
-    return [d for d in PROMO_DAYS if d <= date_str]
+def _ranks(act, tgt):
+    """달성률 순(동률 시 실적 건수). 같은 값은 공동 순위, 다음 순위는 건너뜀."""
+    keys = sorted(tgt, key=lambda s: (-act[s] / tgt[s], -act[s]))
+    r, prev, n = {}, None, 0
+    for i, s in enumerate(keys):
+        k = (round(act[s] / tgt[s], 6), act[s])
+        if k != prev:
+            n, prev = i + 1, k
+        r[s] = n
+    return r
+
+
+def snapshot(upto, phase_name):
+    """upto까지(포함) Phase·누적 집계. upto가 기간 시작 전이면 0."""
+    pname, pa_, pb_ = next(p for p in PHASES if p[0] == phase_name)
+    pdates = _days(pa_, min(pb_, upto)) if upto >= pa_ else []
+    cdates = _days(PERIOD[0], min(PERIOD[1], upto)) if upto >= PERIOD[0] else []
+    pt = PHASE_TARGETS[pname]
+    ct = {s: sum(PHASE_TARGETS[n][s] for n, _, _ in PHASES) for s in STORES}
+    return {"phase": pname, "prange": (pa_, pb_), "pa": count_sales(pdates), "pt": pt,
+            "ca": count_sales(cdates), "ct": ct}
 
 
 # ── 표 이미지 ────────────────────────────────────
@@ -166,179 +213,125 @@ def _font(bold, size):
     return ImageFont.load_default()
 
 
-def render_table(counts, title, subtitle, path="promo.png"):
+def render(snap, subtitle, path="promo.png"):
     from PIL import Image, ImageDraw
-    W, M = 1080, 28
-    NAVY = (16, 42, 84); TEAL = (0, 150, 160); RED = (214, 69, 65)
-    GRAY = (120, 130, 140); DARK = (35, 45, 60); GREEN = (0, 128, 96)
-    LINE = (226, 230, 236); ALT = (248, 250, 252); AREABG = (233, 238, 246)
-    COLS = [M, M + 78, M + 262, M + 370, M + 478, M + 700, W - M]
-    LAB = ["상권", "매장", "목표", "실적", "달성률", "잔여"]
-    ROW = 50
-    H = 150 + 46 + ROW * sum(len(v) for v in AREAS.values()) + 90
+    F = _font
+    NAVY = (16, 42, 84); TEAL = (0, 150, 160); RED = (214, 69, 65); GRAY = (120, 130, 140)
+    DARK = (35, 45, 60); GREEN = (0, 128, 96); LINE = (226, 230, 236); ALT = (248, 250, 252)
+    AREABG = (233, 238, 246)
+    MEDAL = [(212, 160, 23), (150, 160, 172), (192, 122, 58)]
+    pa, pt, ca, ct = snap["pa"], snap["pt"], snap["ca"], snap["ct"]
+    pr, cr = _ranks(pa, pt), _ranks(ca, ct)
 
+    W, M, ROW, SR = 1240, 28, 44, 48
+    C = [M, M + 70, M + 228]
+    x = C[-1]
+    for _ in range(2):
+        for w in (90, 70, 200, 76):
+            x += w
+            C.append(x)
+    H = 128 + 40 + 44 + SR * 4 + 10 + ROW * len(STORES) + 112
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
-    T = sum(PROMO_TARGETS.values())
-    A = sum(min(counts.get(s, 0), 10**6) for s in PROMO_TARGETS)
-    d.text((M, 34), title, font=_font(True, 44), fill=NAVY)
-    tw = d.textlength(title, font=_font(True, 44))
-    d.text((M + tw + 24, 48), f"{subtitle} · 지사 {A}/{T}건 ({A / T * 100:.0f}%)",
-           font=_font(False, 27), fill=GRAY)
+    d.text((M, 26), PROMO_NAME, font=F(True, 42), fill=NAVY)
+    d.text((M, 84), subtitle, font=F(False, 25), fill=GRAY)
 
-    y = 108
-    d.rectangle([M, y, W - M, y + 46], fill=NAVY)
-    for i, lab in enumerate(LAB):
-        d.text(((COLS[i] + COLS[i + 1]) / 2, y + 9), lab,
-               font=_font(True, 27), fill="white", anchor="ma")
-    y += 46
+    y = 128
+    hdr_top = y
+    pa_, pb_ = snap["prange"]
+    d.rectangle([C[0], y, C[2], y + 40], fill=NAVY)
+    d.rectangle([C[2], y, C[6], y + 40], fill=(47, 84, 150))
+    d.rectangle([C[6], y, C[10], y + 40], fill=(176, 110, 10))
+    d.text(((C[2] + C[6]) / 2, y + 20), f"{snap['phase']} ({_md(pa_)[:-3]}~{_md(pb_)[:-3]})",
+           font=F(True, 22), fill="white", anchor="mm")
+    d.text(((C[6] + C[10]) / 2, y + 20), f"누적 ({_md(PERIOD[0])[:-3]}~{_md(PERIOD[1])[:-3]})",
+           font=F(True, 22), fill="white", anchor="mm")
+    y += 40
+    d.rectangle([C[0], y, C[10], y + 44], fill=NAVY)
+    for i, lab in enumerate(["상권", "매장", "목표", "실적", "달성률", "순위", "목표", "실적", "달성률", "순위"]):
+        d.text(((C[i] + C[i + 1]) / 2, y + 22), lab, font=F(True, 22), fill="white", anchor="mm")
+    y += 44
+
+    def bar(gx, a, t, cy, h=7, track=(235, 238, 243)):
+        rate = a / t * 100 if t else 0
+        col = GREEN if rate >= 100 else (DARK if rate >= 50 else RED)
+        bx0, bx1 = C[gx + 2] + 10, C[gx + 3] - 80
+        d.rounded_rectangle([bx0, cy - h, bx1, cy + h], radius=h, fill=track)
+        d.rounded_rectangle([bx0, cy - h, bx0 + max(5, int((bx1 - bx0) * min(rate, 100) / 100)), cy + h],
+                            radius=h, fill=col)
+        d.text((C[gx + 3] - 8, cy), f"{rate:.0f}%", font=F(True, 20), fill=col, anchor="rm")
+
+    # 요약 4줄 (지사 전체 + 상권)
+    asum = {a: (sum(pa[s] for s in ss), sum(pt[s] for s in ss),
+                sum(ca[s] for s in ss), sum(ct[s] for s in ss)) for a, ss in AREAS.items()}
+
+    def arank(i):
+        if sum(asum[a][i] for a in asum) == 0:
+            return {a: "-" for a in asum}
+        order = sorted(asum, key=lambda a: -(asum[a][i] / asum[a][i + 1]))
+        return {a: f"{order.index(a) + 1}위" for a in asum}
+    rp, rc = arank(0), arank(2)
+    rows = [("지사 전체", sum(pa.values()), sum(pt.values()), sum(ca.values()), sum(ct.values()), "-", "-",
+             (214, 226, 245))]
+    rows += [(a, *asum[a], rp[a], rc[a], (240, 244, 250)) for a in AREAS]
+    for label, a1, t1, a2, t2, r1, r2, bg in rows:
+        d.rectangle([C[0], y, C[10], y + SR], fill=bg)
+        cy = y + SR / 2
+        d.text(((C[0] + C[2]) / 2, cy), label, font=F(True, 23), fill=NAVY, anchor="mm")
+        for gx, a, t, r in ((2, a1, t1, r1), (6, a2, t2, r2)):
+            d.text(((C[gx] + C[gx + 1]) / 2, cy), str(t), font=F(True, 22), fill=DARK, anchor="mm")
+            d.text(((C[gx + 1] + C[gx + 2]) / 2, cy), str(a), font=F(True, 22), fill=TEAL, anchor="mm")
+            bar(gx, a, t, cy, 8, "white")
+            d.text(((C[gx + 3] + C[gx + 4]) / 2, cy), r, font=F(True, 21), fill=NAVY, anchor="mm")
+        d.line([C[0], y + SR, C[10], y + SR], fill=(210, 216, 226))
+        y += SR
+    d.line([C[0], y, C[10], y], fill=NAVY, width=3)
+    y += 10
     top, ri = y, 0
-    for area, stores in AREAS.items():
+
+    def rank_cell(gx, r, cy, a):
+        cx = (C[gx + 3] + C[gx + 4]) / 2
+        if a == 0:
+            d.text((cx, cy), "-", font=F(False, 22), fill=(170, 176, 186), anchor="mm")
+        elif r <= 3:
+            d.ellipse([cx - 17, cy - 17, cx + 17, cy + 17], fill=MEDAL[r - 1])
+            d.text((cx, cy), str(r), font=F(True, 21), fill="white", anchor="mm")
+        else:
+            d.text((cx, cy), str(r), font=F(False, 22), fill=DARK, anchor="mm")
+
+    for area, ss in AREAS.items():
         y0 = y
-        for s in stores:
+        for s in ss:
             if ri % 2:
-                d.rectangle([COLS[1], y, W - M, y + ROW], fill=ALT)
-            t, a = PROMO_TARGETS[s], counts.get(s, 0)
-            r = a / t * 100 if t else 0
-            col = GREEN if r >= 100 else (DARK if r >= 50 else RED)
+                d.rectangle([C[1], y, C[10], y + ROW], fill=ALT)
             cy = y + ROW / 2
-            d.text((COLS[1] + 14, cy), SHORT_NAME.get(s, s), font=_font(True, 27),
-                   fill=DARK, anchor="lm")
-            d.text(((COLS[2] + COLS[3]) / 2, cy), str(t), font=_font(False, 27),
-                   fill=DARK, anchor="mm")
-            d.text(((COLS[3] + COLS[4]) / 2, cy), str(a), font=_font(True, 27),
-                   fill=TEAL, anchor="mm")
-            bx0, bx1 = COLS[4] + 14, COLS[5] - 84
-            bw = bx1 - bx0
-            d.rounded_rectangle([bx0, cy - 9, bx1, cy + 9], radius=9, fill=(235, 238, 243))
-            d.rounded_rectangle([bx0, cy - 9, bx0 + max(6, int(bw * min(r, 100) / 100)),
-                                 cy + 9], radius=9, fill=col)
-            d.text((COLS[5] - 10, cy), f"{r:.0f}%", font=_font(True, 25),
-                   fill=col, anchor="rm")
-            rem = max(0, t - a)
-            d.text(((COLS[5] + COLS[6]) / 2, cy), "달성 ✓" if rem == 0 else f"{rem}건",
-                   font=_font(rem == 0, 26), fill=GREEN if rem == 0 else GRAY, anchor="mm")
-            d.line([COLS[1], y + ROW, W - M, y + ROW], fill=LINE)
+            d.text((C[1] + 12, cy), STORE_SHORT.get(s, s), font=F(True, 22), fill=DARK, anchor="lm")
+            for gx, a, t, r in ((2, pa[s], pt[s], pr[s]), (6, ca[s], ct[s], cr[s])):
+                d.text(((C[gx] + C[gx + 1]) / 2, cy), str(t), font=F(False, 22), fill=DARK, anchor="mm")
+                d.text(((C[gx + 1] + C[gx + 2]) / 2, cy), str(a), font=F(True, 22), fill=TEAL, anchor="mm")
+                bar(gx, a, t, cy)
+                rank_cell(gx, r, cy, a)
+            d.line([C[1], y + ROW, C[10], y + ROW], fill=LINE)
             y += ROW
             ri += 1
-        at = sum(PROMO_TARGETS[s] for s in stores)
-        aa = sum(counts.get(s, 0) for s in stores)
-        d.rectangle([M, y0, COLS[1], y], fill=AREABG)
-        d.text(((M + COLS[1]) / 2, (y0 + y) / 2 - 14), area, font=_font(True, 29),
-               fill=NAVY, anchor="mm")
-        d.text(((M + COLS[1]) / 2, (y0 + y) / 2 + 18), f"{aa / at * 100:.0f}%",
-               font=_font(True, 22), fill=TEAL, anchor="mm")
-        d.line([M, y, W - M, y], fill=NAVY, width=3)
-    for x in COLS[1:-1]:
-        d.line([x, top, x, y], fill=LINE)
-    n_ok = sum(1 for s in PROMO_TARGETS if counts.get(s, 0) >= PROMO_TARGETS[s])
-    d.text((M, y + 18),
-           f"달성 {n_ok}곳 · 미달 {len(PROMO_TARGETS) - n_ok}곳   |   "
-           f"실적공유방 기준 · 초록 100%↑ 검정 50%↑ 빨강 50% 미만",
-           font=_font(False, 22), fill=GRAY)
+        at = sum(pt[s] for s in ss)
+        aa = sum(pa[s] for s in ss)
+        d.rectangle([C[0], y0, C[1], y], fill=AREABG)
+        d.text(((C[0] + C[1]) / 2, (y0 + y) / 2 - 12), AREA_SHORT[area], font=F(True, 25), fill=NAVY, anchor="mm")
+        d.text(((C[0] + C[1]) / 2, (y0 + y) / 2 + 16), f"{aa / at * 100:.0f}%", font=F(True, 19),
+               fill=TEAL, anchor="mm")
+        d.line([C[0], y, C[10], y], fill=NAVY, width=3)
+    for xx in C[1:-1]:
+        d.line([xx, top, xx, y], fill=LINE)
+    d.line([C[6], hdr_top, C[6], y], fill=NAVY, width=3)
+
+    d.text((M, y + 14), "매장 순위: 28개 매장 달성률 순(동률 시 실적 건수, 실적 0건은 '-') · 상권 순위: 3개 상권 달성률 순",
+           font=F(False, 20), fill=GRAY)
+    d.text((M, y + 40), "달성률 색상: 초록 100%↑ · 검정 50%↑ · 빨강 50% 미만", font=F(False, 20), fill=GRAY)
+    d.rounded_rectangle([M, y + 70, W - M, y + 104], radius=8, fill=(254, 242, 242))
+    d.text((M + 14, y + 87), DISCLAIMER, font=F(True, 19), fill=RED, anchor="lm")
     img.save(path)
-    return path, n_ok, A, T
-
-
-# ── 1일차 아침 안내 포스터 ──────────────────────
-def _md_wk(date_str):
-    from datetime import date
-    y, m, d = map(int, date_str.split("-"))
-    return f"{m}/{d}({'월화수목금토일'[date(y, m, d).weekday()]})"
-
-
-def render_poster(path="promo_poster.png"):
-    from PIL import Image, ImageDraw
-    W, M = 1080, 44
-    NAVY = (16, 42, 84); TEAL = (0, 150, 160); DARK = (35, 45, 60); GRAY = (110, 120, 132)
-    LINE = (226, 230, 236); SOFT = (240, 244, 249); GREEN = (0, 128, 96); ORANGE = (214, 120, 20)
-    img = Image.new("RGB", (W, 1800), "white")
-    d = ImageDraw.Draw(img)
-    T = sum(PROMO_TARGETS.values())
-    d.rectangle([0, 0, W, 190], fill=NAVY)
-    d.text((M, 40), PROMO_NAME, font=_font(True, 58), fill="white")
-    d.text((M, 122), f"{_md_wk(PROMO_DAYS[0])} ~ {_md_wk(PROMO_DAYS[-1])}  ·  "
-                     f"{len(PROMO_DAYS)}일 합산  ·  지사 목표 {T}건",
-           font=_font(False, 30), fill=(190, 205, 225))
-    y = [230]
-
-    def section(title):
-        d.rounded_rectangle([M, y[0] + 6, M + 8, y[0] + 38], radius=3, fill=TEAL)
-        d.text((M + 22, y[0]), title, font=_font(True, 34), fill=NAVY)
-        y[0] += 62
-
-    section("시상 기준 (건당 지급)")
-    C = [M, M + 430, M + 716, W - M]
-    d.rectangle([C[0], y[0], C[3], y[0] + 56], fill=NAVY)
-    for i, t in enumerate(["구분", "목표 달성 매장", "목표 미달 매장"]):
-        d.text(((C[i] + C[i + 1]) / 2, y[0] + 28), t, font=_font(True, 27),
-               fill="white", anchor="mm")
-    y[0] += 56
-    y_tbl = y[0]
-    for i, (label, sub, ok, ng) in enumerate(PROMO_RULES):
-        h = 100 if sub else 84
-        d.rectangle([C[0], y[0], C[3], y[0] + h], fill=SOFT if i % 2 else "white")
-        if sub:
-            d.text((C[0] + 22, y[0] + h / 2 - 16), label, font=_font(True, 28), fill=DARK, anchor="lm")
-            d.text((C[0] + 22, y[0] + h / 2 + 20), sub, font=_font(False, 22), fill=GRAY, anchor="lm")
-        else:
-            d.text((C[0] + 22, y[0] + h / 2), label, font=_font(True, 28), fill=DARK, anchor="lm")
-        d.text(((C[1] + C[2]) / 2, y[0] + h / 2), f"{ok:,}원", font=_font(True, 34),
-               fill=GREEN, anchor="mm")
-        d.text(((C[2] + C[3]) / 2, y[0] + h / 2), f"{ng:,}원", font=_font(True, 30),
-               fill=ORANGE, anchor="mm")
-        d.line([C[0], y[0] + h, C[3], y[0] + h], fill=LINE, width=2)
-        y[0] += h
-    for x in C[1:-1]:
-        d.line([x, y_tbl, x, y[0]], fill=LINE, width=2)
-    y[0] += 18
-    for t in PROMO_NOTES:
-        d.text((M + 6, y[0]), "· " + t, font=_font(False, 25), fill=GRAY)
-        y[0] += 38
-    y[0] += 34
-
-    section(f"매장별 목표 ({len(PROMO_DAYS)}일 합산)")
-    for area, stores in AREAS.items():
-        at = sum(PROMO_TARGETS[s] for s in stores)
-        rows_n = (len(stores) + 4) // 5
-        ch = 70 + rows_n * 62
-        d.rounded_rectangle([M, y[0], W - M, y[0] + ch], radius=16, fill=SOFT)
-        d.text((M + 26, y[0] + 22), area, font=_font(True, 32), fill=NAVY)
-        d.text((W - M - 26, y[0] + 26), f"{at}건", font=_font(True, 30), fill=TEAL, anchor="ra")
-        cw = (W - 2 * M - 40) / 5
-        for i, s in enumerate(stores):
-            cx = M + 20 + (i % 5) * cw
-            cy = y[0] + 74 + (i // 5) * 62
-            d.rounded_rectangle([cx + 4, cy, cx + cw - 6, cy + 50], radius=10,
-                                fill="white", outline=LINE)
-            d.text((cx + 18, cy + 25), SHORT_NAME.get(s, s), font=_font(False, 25),
-                   fill=DARK, anchor="lm")
-            d.text((cx + cw - 20, cy + 25), str(PROMO_TARGETS[s]), font=_font(True, 28),
-                   fill=TEAL, anchor="rm")
-        y[0] += ch + 20
-    y[0] += 10
-    d.text((W / 2, y[0]), "14·16·18시와 마감에 매장별 달성 현황을 표로 공유합니다",
-           font=_font(True, 26), fill=NAVY, anchor="ma")
-    y[0] += 60
-    img.crop((0, 0, W, y[0])).save(path)
     return path
-
-
-# ── 아침 목표 안내(1일차) ────────────────────────
-def targets_text():
-    d1, d2 = PROMO_DAYS[0], PROMO_DAYS[-1]
-    L = [f"🎯 {PROMO_NAME} 시작! ({int(d1[5:7])}/{int(d1[8:])}~{int(d2[5:7])}/{int(d2[8:])} · 2일 합산)",
-         "", "매장별 목표 (실적공유방 휴대폰 개통 기준)", ""]
-    for area, stores in AREAS.items():
-        at = sum(PROMO_TARGETS[s] for s in stores)
-        L.append(f"[{area}] {at}건")
-        items = [f"{SHORT_NAME.get(s, s)} {PROMO_TARGETS[s]}" for s in stores]
-        for i in range(0, len(items), 5):
-            L.append("  " + " · ".join(items[i:i + 5]))
-        L.append("")
-    L.append(f"지사 목표 {sum(PROMO_TARGETS.values())}건")
-    L.append("14·16·18시와 마감에 달성 현황을 표로 공유합니다 🔥")
-    return "\n".join(L)
 
 
 # ── 전송 ─────────────────────────────────────────
@@ -351,7 +344,7 @@ def send_photo(tg_base, chat_id, path, caption, retries=3):
                                   files={"photo": f}, timeout=(10, 120))
             j = r.json()
             if j.get("ok"):
-                print(f"[프로모션] 표 게시 완료" + (f" (재시도 {i}회차)" if i > 1 else ""))
+                print("[프로모션] 표 게시 완료" + (f" (재시도 {i}회차)" if i > 1 else ""))
                 return True
             print(f"[프로모션] 표 게시 거부: {j.get('error_code')} {j.get('description')!r}")
             if j.get("error_code") not in (500, 502, 503, 504, 429):
@@ -363,24 +356,36 @@ def send_photo(tg_base, chat_id, path, caption, retries=3):
     return False
 
 
+def _pct(a, t):
+    return f"{a}/{t}건 ({a / t * 100:.0f}%)" if t else f"{a}건"
+
+
+def _caption(head, snap):
+    pa, pt, ca, ct = (sum(snap[k].values()) for k in ("pa", "pt", "ca", "ct"))
+    return (f"{head}\n{snap['phase']} {_pct(pa, pt)} · 누적 {_pct(ca, ct)}\n"
+            f"※ 실적공유방 기준 · 최종 마감은 전산 데이터로 별도 공지")
+
+
 def post_status(tg_base, chat_id, date_str, when):
-    """중간점검·마감용: 누적 집계 → 표 이미지 → 전송. 기간 밖이면 아무것도 안 함."""
+    """중간점검(14·16·18시)·마감: 오늘까지 집계 → 표 → 전송."""
     if not is_promo_day(date_str):
         return
     try:
-        counts = count_store_sales(dates_until(date_str))
-        n = day_index(date_str)
-        final = (date_str == PROMO_DAYS[-1] and when == "마감")
-        title = f"{PROMO_NAME} {'최종 결과' if final else '달성 현황'}"
-        md = f"{int(date_str[5:7])}/{int(date_str[8:])}"
-        sub = f"{md} {n}일차 {when}"
-        path, n_ok, A, T = render_table(counts, title, sub)
-        if final:
-            cap = (f"🏆 {PROMO_NAME} 최종 결과 — 지사 {A}/{T}건 ({A / T * 100:.0f}%) · "
-                   f"달성 매장 {n_ok}곳! 2일간 고생 많으셨습니다 👏")
+        ph = phase_of(date_str)
+        if not ph:
+            return
+        name, pa_, pb_ = ph
+        snap = snapshot(date_str, name)
+        n = _workdays(pa_, date_str)
+        if when == "마감" and date_str == PERIOD[1]:
+            sub, head = f"{_md(date_str)} 마감 · 최종 결과 (실적공유방 기준)", \
+                f"🏆 {PROMO_NAME} 최종 결과"
+        elif when == "마감" and date_str == pb_:
+            sub, head = f"{_md(date_str)} 마감 · {name} 최종 결과", f"🏁 {name} 최종 결과"
         else:
-            cap = f"🎯 {PROMO_NAME} {n}일차 {when} 현황 — 지사 {A}/{T}건 ({A / T * 100:.0f}%)"
-        send_photo(tg_base, chat_id, path, cap)
+            sub, head = f"{_md(date_str)} {when} · {name} {n}일차", f"🎯 {name} {n}일차 {when} 현황"
+        path = render(snap, sub)
+        send_photo(tg_base, chat_id, path, _caption(head, snap))
     except Exception as exc:
         import traceback
         print(f"[프로모션] 처리 실패: {exc!r}")
@@ -388,31 +393,27 @@ def post_status(tg_base, chat_id, date_str, when):
 
 
 def post_morning(tg_base, chat_id, date_str, send_text):
-    """아침: 1일차는 목표 안내 텍스트, 2일차부터는 전일까지 누적 표."""
+    """아침: 어제까지 누적 기준 표. Phase 첫날은 시작 안내 문구를 붙인다."""
     if not is_promo_day(date_str):
         return
     try:
-        n = day_index(date_str)
-        if n == 1:
-            try:
-                path = render_poster()
-                cap = (f"🎯 {PROMO_NAME} 시작! ({len(PROMO_DAYS)}일 합산)\n"
-                       f"매장별 목표와 시상 기준을 확인하시고 {len(PROMO_DAYS)}일간 힘차게 달려봐요 🔥")
-                if send_photo(tg_base, chat_id, path, cap):
-                    return
-            except Exception as exc:
-                print(f"[프로모션] 포스터 생성 실패 → 텍스트로 대체: {exc!r}")
-            send_text(targets_text())
+        ph = phase_of(date_str)
+        if not ph:
             return
-        prev = [d for d in PROMO_DAYS if d < date_str]
-        counts = count_store_sales(prev)
-        md = f"{int(prev[-1][5:7])}/{int(prev[-1][8:])}"
-        path, n_ok, A, T = render_table(counts, f"{PROMO_NAME} 중간 결과",
-                                        f"{md}까지 누적")
-        cap = (f"🎯 {PROMO_NAME} {n}일차 (마지막 날!) — 어제까지 {A}/{T}건 "
-               f"({A / T * 100:.0f}%) · 달성 {n_ok}곳\n"
-               f"잔여 건수 확인하시고 오늘 마무리해봐요 🔥")
-        send_photo(tg_base, chat_id, path, cap)
+        name, pa_, pb_ = ph
+        prev = (_d(date_str) - timedelta(days=1)).isoformat()
+        snap = snapshot(prev, name)
+        if date_str == PERIOD[0]:
+            sub = f"{_md(date_str)} 시작 · {name} ({_md(pa_)}~{_md(pb_)})"
+            head = f"🚀 {PROMO_NAME} 시작! 매장별 목표를 확인해주세요"
+        elif date_str == pa_:
+            sub = f"{_md(date_str)} {name} 시작 · 누적은 어제까지 기준"
+            head = f"🚀 {name} 시작! ({_md(pa_)}~{_md(pb_)}) — 누적 순위도 이어집니다"
+        else:
+            sub = f"{_md(date_str)} 아침 · 어제까지 기준"
+            head = f"☀️ {name} {_workdays(pa_, date_str)}일차 아침 — 어제까지 현황"
+        path = render(snap, sub)
+        send_photo(tg_base, chat_id, path, _caption(head, snap))
     except Exception as exc:
         import traceback
         print(f"[프로모션] 아침 안내 실패: {exc!r}")
